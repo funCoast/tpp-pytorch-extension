@@ -9,9 +9,11 @@
 ###############################################################################
 
 import os
-from .._C import _xsmm as xsmm_cpp
 from contextlib import contextmanager
 from enum import IntEnum
+
+import torch
+from .._C import _xsmm as xsmm_cpp
 
 
 class BrgemmBackend(IntEnum):
@@ -20,6 +22,7 @@ class BrgemmBackend(IntEnum):
 
 
 _BRGEMM_BACKEND_ENV = "TPP_BRGEMM_BACKEND"
+_BRGEMM_COMPARE_ENV = "TPP_BRGEMM_COMPARE"
 
 
 def _normalize_backend(backend):
@@ -42,6 +45,13 @@ def _backend_display_name(backend):
 
 def _debug_print_backend(backend):
     print(f"[SME-GEMM-dev DEBUG]:当前使用的是 {_backend_display_name(backend)}")
+
+
+def _env_truthy(name):
+    value = os.getenv(name)
+    if value is None:
+        return False
+    return value.strip().lower() in ("1", "true", "yes", "on")
 
 
 def manual_seed(seed):
@@ -69,6 +79,67 @@ def set_brgemm_backend(backend):
     xsmm_cpp.set_brgemm_backend(int(backend))
     xsmm_cpp.set_smelt_auto_context_switch(backend == BrgemmBackend.SMELT)
     _debug_print_backend(backend)
+
+
+def is_smelt_backend(backend=None):
+    if backend is None:
+        backend = get_brgemm_backend()
+    return _normalize_backend(backend) == BrgemmBackend.SMELT
+
+
+def should_compare_brgemm():
+    return _env_truthy(_BRGEMM_COMPARE_ENV)
+
+
+def describe_tensor(tensor):
+    if tensor is None:
+        return "None"
+    if not torch.is_tensor(tensor):
+        return f"{type(tensor).__name__}({tensor!r})"
+    return f"shape={tuple(tensor.shape)}, dtype={tensor.dtype}, device={tensor.device}"
+
+
+def log_brgemm_shapes(tag, named_tensors):
+    print(f"[SME-GEMM-dev DEBUG]:{tag} shapes:")
+    for name, tensor in named_tensors:
+        print(f"  - {name}: {describe_tensor(tensor)}")
+
+
+def log_brgemm_output_compare(tag, smelt_output, ref_output):
+    print(f"[SME-GEMM-dev DEBUG]:{tag} output compare:")
+    print(f"  - smelt: {describe_tensor(smelt_output)}")
+    print(f"  - libxsmm: {describe_tensor(ref_output)}")
+    if not torch.is_tensor(smelt_output) or not torch.is_tensor(ref_output):
+        print("  - compare skipped: outputs are not tensors")
+        return
+    if smelt_output.shape != ref_output.shape:
+        print(
+            f"  - shape mismatch: smelt={tuple(smelt_output.shape)}, "
+            f"libxsmm={tuple(ref_output.shape)}"
+        )
+        return
+
+    smelt_finite = torch.isfinite(smelt_output)
+    ref_finite = torch.isfinite(ref_output)
+    shared_finite = smelt_finite & ref_finite
+    total = smelt_output.numel()
+    shared_count = int(shared_finite.sum().item())
+    smelt_nan = int(torch.isnan(smelt_output).sum().item())
+    ref_nan = int(torch.isnan(ref_output).sum().item())
+    smelt_inf = int(torch.isinf(smelt_output).sum().item())
+    ref_inf = int(torch.isinf(ref_output).sum().item())
+
+    print(f"  - shared finite elements: {shared_count}/{total}")
+    print(f"  - smelt nan/inf: {smelt_nan}/{smelt_inf}")
+    print(f"  - libxsmm nan/inf: {ref_nan}/{ref_inf}")
+
+    if shared_count == 0:
+        print("  - no shared finite elements to compare")
+        return
+
+    abs_diff = (smelt_output[shared_finite] - ref_output[shared_finite]).abs()
+    print(f"  - max abs diff: {abs_diff.max().item():.6e}")
+    print(f"  - mean abs diff: {abs_diff.mean().item():.6e}")
 
 
 @contextmanager
