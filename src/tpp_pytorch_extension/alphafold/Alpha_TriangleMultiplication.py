@@ -17,6 +17,7 @@ from torch.autograd import Function
 from tpp_pytorch_extension._C import (
     _alpha_attention as Alpha_TriangleMultiplication_cpp,
 )
+from tpp_pytorch_extension.utils.xsmm import brgemm_backend
 
 
 class TriangleMultiplicationFunction(Function):
@@ -72,125 +73,9 @@ class TriangleMultiplicationFunction(Function):
         return act
 
 
-def TriangleMultiplicationOpti_forward(self, act, mask):
+def TriangleMultiplicationOpti_forward(self, act, mask, backend="libxsmm"):
     mask = mask[..., None]
-    if (
-        act.dtype == torch.float16
-        or mask.dtype == torch.float16
-        or self.layer_norm_input.weight.dtype == torch.float16
-        or self.layer_norm_input.bias.dtype == torch.float16
-        or self.left_projection.weight.dtype == torch.float16
-        or self.left_projection.bias.dtype == torch.float16
-        or self.right_projection.weight.dtype == torch.float16
-        or self.right_projection.bias.dtype == torch.float16
-        or self.left_gate.weight.dtype == torch.float16
-        or self.left_gate.bias.dtype == torch.float16
-        or self.right_gate.weight.dtype == torch.float16
-        or self.right_gate.bias.dtype == torch.float16
-        or self.center_layer_norm.weight.dtype == torch.float16
-        or self.center_layer_norm.bias.dtype == torch.float16
-        or self.output_projection.weight.dtype == torch.float16
-        or self.output_projection.bias.dtype == torch.float16
-        or self.gating_linear.weight.dtype == torch.float16
-        or self.gating_linear.bias.dtype == torch.float16
-    ):
-        act = TriangleMultiplicationFunction.apply(
-            act.to(torch.float16),
-            mask.to(torch.float32),
-            self.c_equation,
-            self.layer_norm_input.weight.to(torch.float16),
-            self.layer_norm_input.bias.to(torch.float16),
-            self.left_projection.weight.to(torch.float16),
-            self.left_projection.bias.to(torch.float32),
-            self.right_projection.weight.to(torch.float16),
-            self.right_projection.bias.to(torch.float32),
-            self.left_gate.weight.to(torch.float16),
-            self.left_gate.bias.to(torch.float32),
-            self.right_gate.weight.to(torch.float16),
-            self.right_gate.bias.to(torch.float32),
-            self.center_layer_norm.weight.to(torch.float16),
-            self.center_layer_norm.bias.to(torch.float16),
-            self.output_projection.weight.to(torch.float16),
-            self.output_projection.bias.to(torch.float32),
-            self.gating_linear.weight.to(torch.float16),
-            self.gating_linear.bias.to(torch.float32),
-        )
-    else:
-        act = TriangleMultiplicationFunction.apply(
-            act,
-            mask,
-            self.c_equation,
-            self.layer_norm_input.weight,
-            self.layer_norm_input.bias,
-            self.left_projection.weight,
-            self.left_projection.bias,
-            self.right_projection.weight,
-            self.right_projection.bias,
-            self.left_gate.weight,
-            self.left_gate.bias,
-            self.right_gate.weight,
-            self.right_gate.bias,
-            self.center_layer_norm.weight,
-            self.center_layer_norm.bias,
-            self.output_projection.weight,
-            self.output_projection.bias,
-            self.gating_linear.weight,
-            self.gating_linear.bias,
-        )
-    return act
-
-
-class TriangleMultiplicationOpti(nn.Module):
-
-    #   def __init__(self,config, global_config, act_dim):
-    def __init__(self, equation, num_intermediate_channel, act_dim):
-        """Builds TriangleMultiplication module.
-
-        Arguments:
-          act: Pair activations, shape [N_res, N_res, c_z]
-          mask: Pair mask, shape [N_res, N_res].
-          is_training: Whether the module is in training mode.
-
-        Returns:
-          Outputs, same shape/type as act.
-        """
-        super().__init__()
-        # self.config = config
-        # self.global_config = global_config
-        # self.c_equation = self.config['equation']
-        self.c_equation = equation
-        # self.num_intermediate_channel = num_intermediate_channel
-        self.layer_norm_input = nn.LayerNorm(
-            normalized_shape=act_dim, elementwise_affine=True
-        )
-        self.left_projection = nn.Linear(act_dim, num_intermediate_channel)
-        self.right_projection = nn.Linear(act_dim, num_intermediate_channel)
-        self.left_gate = nn.Linear(act_dim, num_intermediate_channel)
-        self.right_gate = nn.Linear(act_dim, num_intermediate_channel)
-        self.center_layer_norm = nn.LayerNorm(
-            normalized_shape=act_dim, elementwise_affine=True
-        )
-        self.output_projection = nn.Linear(act_dim, act_dim)
-        self.gating_linear = nn.Linear(act_dim, act_dim)
-
-    def forward(self, act, mask):
-        mask = mask[..., None]
-        # act = self.layer_norm_input(act)
-        # input_act = act # For gate
-        # left_proj_act = mask * self.left_projection(act)
-        # right_proj_act = mask * self.right_projection(act)
-        # left_proj_act *= torch.sigmoid(self.left_gate(act))
-        # right_proj_act *= torch.sigmoid(self.right_gate(act))
-        # # "Outgoing" edges equation: 'ikc,jkc->ijc'
-        # # "Incoming" edges equation: 'kjc,kic->ijc'
-        # # Note on the Suppl. Alg. 11 & 12 notation:
-        # # For the "outgoing" edges, a = left_proj_act and b = right_proj_act
-        # # For the "incoming" edges, it's swapped:
-        # #   b = left_proj_act and a = right_proj_act
-        # act = torch.einsum(self.c_equation, left_proj_act, right_proj_act)
-        # act = self.center_layer_norm(act)
-        # act = self.output_projection(act)
-        # act *= torch.sigmoid(self.gating_linear(input_act))
+    with brgemm_backend(backend):
         if (
             act.dtype == torch.float16
             or mask.dtype == torch.float16
@@ -254,4 +139,122 @@ class TriangleMultiplicationOpti(nn.Module):
                 self.gating_linear.weight,
                 self.gating_linear.bias,
             )
+    return act
+
+
+class TriangleMultiplicationOpti(nn.Module):
+
+    #   def __init__(self,config, global_config, act_dim):
+    def __init__(self, equation, num_intermediate_channel, act_dim):
+        """Builds TriangleMultiplication module.
+
+        Arguments:
+          act: Pair activations, shape [N_res, N_res, c_z]
+          mask: Pair mask, shape [N_res, N_res].
+          is_training: Whether the module is in training mode.
+
+        Returns:
+          Outputs, same shape/type as act.
+        """
+        super().__init__()
+        # self.config = config
+        # self.global_config = global_config
+        # self.c_equation = self.config['equation']
+        self.c_equation = equation
+        # self.num_intermediate_channel = num_intermediate_channel
+        self.layer_norm_input = nn.LayerNorm(
+            normalized_shape=act_dim, elementwise_affine=True
+        )
+        self.left_projection = nn.Linear(act_dim, num_intermediate_channel)
+        self.right_projection = nn.Linear(act_dim, num_intermediate_channel)
+        self.left_gate = nn.Linear(act_dim, num_intermediate_channel)
+        self.right_gate = nn.Linear(act_dim, num_intermediate_channel)
+        self.center_layer_norm = nn.LayerNorm(
+            normalized_shape=act_dim, elementwise_affine=True
+        )
+        self.output_projection = nn.Linear(act_dim, act_dim)
+        self.gating_linear = nn.Linear(act_dim, act_dim)
+
+    def forward(self, act, mask, backend="libxsmm"):
+        mask = mask[..., None]
+        # act = self.layer_norm_input(act)
+        # input_act = act # For gate
+        # left_proj_act = mask * self.left_projection(act)
+        # right_proj_act = mask * self.right_projection(act)
+        # left_proj_act *= torch.sigmoid(self.left_gate(act))
+        # right_proj_act *= torch.sigmoid(self.right_gate(act))
+        # # "Outgoing" edges equation: 'ikc,jkc->ijc'
+        # # "Incoming" edges equation: 'kjc,kic->ijc'
+        # # Note on the Suppl. Alg. 11 & 12 notation:
+        # # For the "outgoing" edges, a = left_proj_act and b = right_proj_act
+        # # For the "incoming" edges, it's swapped:
+        # #   b = left_proj_act and a = right_proj_act
+        # act = torch.einsum(self.c_equation, left_proj_act, right_proj_act)
+        # act = self.center_layer_norm(act)
+        # act = self.output_projection(act)
+        # act *= torch.sigmoid(self.gating_linear(input_act))
+        with brgemm_backend(backend):
+            if (
+                act.dtype == torch.float16
+                or mask.dtype == torch.float16
+                or self.layer_norm_input.weight.dtype == torch.float16
+                or self.layer_norm_input.bias.dtype == torch.float16
+                or self.left_projection.weight.dtype == torch.float16
+                or self.left_projection.bias.dtype == torch.float16
+                or self.right_projection.weight.dtype == torch.float16
+                or self.right_projection.bias.dtype == torch.float16
+                or self.left_gate.weight.dtype == torch.float16
+                or self.left_gate.bias.dtype == torch.float16
+                or self.right_gate.weight.dtype == torch.float16
+                or self.right_gate.bias.dtype == torch.float16
+                or self.center_layer_norm.weight.dtype == torch.float16
+                or self.center_layer_norm.bias.dtype == torch.float16
+                or self.output_projection.weight.dtype == torch.float16
+                or self.output_projection.bias.dtype == torch.float16
+                or self.gating_linear.weight.dtype == torch.float16
+                or self.gating_linear.bias.dtype == torch.float16
+            ):
+                act = TriangleMultiplicationFunction.apply(
+                    act.to(torch.float16),
+                    mask.to(torch.float32),
+                    self.c_equation,
+                    self.layer_norm_input.weight.to(torch.float16),
+                    self.layer_norm_input.bias.to(torch.float16),
+                    self.left_projection.weight.to(torch.float16),
+                    self.left_projection.bias.to(torch.float32),
+                    self.right_projection.weight.to(torch.float16),
+                    self.right_projection.bias.to(torch.float32),
+                    self.left_gate.weight.to(torch.float16),
+                    self.left_gate.bias.to(torch.float32),
+                    self.right_gate.weight.to(torch.float16),
+                    self.right_gate.bias.to(torch.float32),
+                    self.center_layer_norm.weight.to(torch.float16),
+                    self.center_layer_norm.bias.to(torch.float16),
+                    self.output_projection.weight.to(torch.float16),
+                    self.output_projection.bias.to(torch.float32),
+                    self.gating_linear.weight.to(torch.float16),
+                    self.gating_linear.bias.to(torch.float32),
+                )
+            else:
+                act = TriangleMultiplicationFunction.apply(
+                    act,
+                    mask,
+                    self.c_equation,
+                    self.layer_norm_input.weight,
+                    self.layer_norm_input.bias,
+                    self.left_projection.weight,
+                    self.left_projection.bias,
+                    self.right_projection.weight,
+                    self.right_projection.bias,
+                    self.left_gate.weight,
+                    self.left_gate.bias,
+                    self.right_gate.weight,
+                    self.right_gate.bias,
+                    self.center_layer_norm.weight,
+                    self.center_layer_norm.bias,
+                    self.output_projection.weight,
+                    self.output_projection.bias,
+                    self.gating_linear.weight,
+                    self.gating_linear.bias,
+                )
         return act

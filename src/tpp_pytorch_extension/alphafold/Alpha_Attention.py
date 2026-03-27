@@ -14,6 +14,7 @@ from torch import nn
 from torch.nn.parameter import Parameter
 from torch.nn import init
 from torch.autograd import Function
+from tpp_pytorch_extension.utils.xsmm import brgemm_backend
 
 # from tpp_pytorch_extension.utils.blocked_layout import (
 #     BlockedParameter,
@@ -23,9 +24,6 @@ from torch.autograd import Function
 # )
 from tpp_pytorch_extension._C import _alpha_attention as Alpha_Attention_cpp
 import time
-from contextlib import contextmanager
-
-
 class AlphaAttentionFunction(Function):
     @staticmethod
     def forward(
@@ -63,7 +61,7 @@ class AlphaAttentionFunction(Function):
 
 
 def GatingAttentionOpti_forward(
-    self, q_data, m_data, bias, nonbatched_bias=torch.Tensor()
+    self, q_data, m_data, bias, nonbatched_bias=torch.Tensor(), backend="libxsmm"
 ):
     """Builds Attention module.
     Arguments:
@@ -92,51 +90,51 @@ def GatingAttentionOpti_forward(
     #     self.value_dim,
     # )
 
-    if (
-        q_data.dtype == torch.float16
-        or m_data.dtype == torch.float16
-        or bias.dtype == torch.float16
-        or nonbatched_bias.dtype == torch.float16
-        or self.query_w.dtype == torch.float16
-        or self.key_w.dtype == torch.float16
-        or self.value_w.dtype == torch.float16
-        or self.gating_w.dtype == torch.float16
-        or self.gating_b.dtype == torch.float16
-        or self.output_w.dtype == torch.float16
-        or self.output_b.dtype == torch.float16
-    ):
-
-        output = AlphaAttentionFunction.apply(
-            q_data.type(torch.float16),
-            m_data.type(torch.float16),
-            bias.type(torch.float32),
-            nonbatched_bias.type(torch.float32),
-            self.query_w.type(torch.float16),
-            self.key_w.type(torch.float16),
-            self.value_w.type(torch.float16),
-            self.gating_w.type(torch.float16),
-            self.gating_b.type(torch.float32),
-            self.output_w.type(torch.float16),
-            self.output_b.type(torch.float32),
-            self.key_dim,
-            self.value_dim,
-        )
-    else:
-        output = AlphaAttentionFunction.apply(
-            q_data,
-            m_data,
-            bias,
-            nonbatched_bias,
-            self.query_w,
-            self.key_w,
-            self.value_w,
-            self.gating_w,
-            self.gating_b,
-            self.output_w,
-            self.output_b,
-            self.key_dim,
-            self.value_dim,
-        )
+    with brgemm_backend(backend):
+        if (
+            q_data.dtype == torch.float16
+            or m_data.dtype == torch.float16
+            or bias.dtype == torch.float16
+            or nonbatched_bias.dtype == torch.float16
+            or self.query_w.dtype == torch.float16
+            or self.key_w.dtype == torch.float16
+            or self.value_w.dtype == torch.float16
+            or self.gating_w.dtype == torch.float16
+            or self.gating_b.dtype == torch.float16
+            or self.output_w.dtype == torch.float16
+            or self.output_b.dtype == torch.float16
+        ):
+            output = AlphaAttentionFunction.apply(
+                q_data.type(torch.float16),
+                m_data.type(torch.float16),
+                bias.type(torch.float32),
+                nonbatched_bias.type(torch.float32),
+                self.query_w.type(torch.float16),
+                self.key_w.type(torch.float16),
+                self.value_w.type(torch.float16),
+                self.gating_w.type(torch.float16),
+                self.gating_b.type(torch.float32),
+                self.output_w.type(torch.float16),
+                self.output_b.type(torch.float32),
+                self.key_dim,
+                self.value_dim,
+            )
+        else:
+            output = AlphaAttentionFunction.apply(
+                q_data,
+                m_data,
+                bias,
+                nonbatched_bias,
+                self.query_w,
+                self.key_w,
+                self.value_w,
+                self.gating_w,
+                self.gating_b,
+                self.output_w,
+                self.output_b,
+                self.key_dim,
+                self.value_dim,
+            )
     return output
 
 
@@ -189,7 +187,9 @@ class GatingAttentionOpti(nn.Module):
     def read_time(self) -> float:
         return time.time()
 
-    def forward(self, q_data, m_data, bias, nonbatched_bias=torch.Tensor()):
+    def forward(
+        self, q_data, m_data, bias, nonbatched_bias=torch.Tensor(), backend="libxsmm"
+    ):
         """Builds Attention module.
         Arguments:
           q_data: A tensor of queries, shape [batch_size, N_queries, q_channels].
@@ -211,52 +211,53 @@ class GatingAttentionOpti(nn.Module):
 
         # output = AlphaAttentionFunction.apply(*inputs, self.key_dim, self.value_dim)
 
-        if (
-            q_data.dtype == torch.float16
-            or m_data.dtype == torch.float16
-            or bias.dtype == torch.float16
-            or nonbatched_bias.dtype == torch.float16
-            or self.query_w.dtype == torch.float16
-            or self.key_w.dtype == torch.float16
-            or self.value_w.dtype == torch.float16
-            or self.gating_w.dtype == torch.float16
-            or self.gating_b.dtype == torch.float16
-            or self.output_w.dtype == torch.float16
-            or self.output_b.dtype == torch.float16
-        ):
+        with brgemm_backend(backend):
+            if (
+                q_data.dtype == torch.float16
+                or m_data.dtype == torch.float16
+                or bias.dtype == torch.float16
+                or nonbatched_bias.dtype == torch.float16
+                or self.query_w.dtype == torch.float16
+                or self.key_w.dtype == torch.float16
+                or self.value_w.dtype == torch.float16
+                or self.gating_w.dtype == torch.float16
+                or self.gating_b.dtype == torch.float16
+                or self.output_w.dtype == torch.float16
+                or self.output_b.dtype == torch.float16
+            ):
 
-            output = AlphaAttentionFunction.apply(
-                q_data.type(torch.float16),
-                m_data.type(torch.float16),
-                bias.type(torch.float32),
-                nonbatched_bias.type(torch.float32),
-                self.query_w.type(torch.float16),
-                self.key_w.type(torch.float16),
-                self.value_w.type(torch.float16),
-                self.gating_w.type(torch.float16),
-                self.gating_b.type(torch.float32),
-                self.output_w.type(torch.float16),
-                self.output_b.type(torch.float32),
-                self.key_dim,
-                self.value_dim,
-            )
+                output = AlphaAttentionFunction.apply(
+                    q_data.type(torch.float16),
+                    m_data.type(torch.float16),
+                    bias.type(torch.float32),
+                    nonbatched_bias.type(torch.float32),
+                    self.query_w.type(torch.float16),
+                    self.key_w.type(torch.float16),
+                    self.value_w.type(torch.float16),
+                    self.gating_w.type(torch.float16),
+                    self.gating_b.type(torch.float32),
+                    self.output_w.type(torch.float16),
+                    self.output_b.type(torch.float32),
+                    self.key_dim,
+                    self.value_dim,
+                )
 
-        else:
-            output = AlphaAttentionFunction.apply(
-                q_data,
-                m_data,
-                bias,
-                nonbatched_bias,
-                self.query_w,
-                self.key_w,
-                self.value_w,
-                self.gating_w,
-                self.gating_b,
-                self.output_w,
-                self.output_b,
-                self.key_dim,
-                self.value_dim,
-            )
+            else:
+                output = AlphaAttentionFunction.apply(
+                    q_data,
+                    m_data,
+                    bias,
+                    nonbatched_bias,
+                    self.query_w,
+                    self.key_w,
+                    self.value_w,
+                    self.gating_w,
+                    self.gating_b,
+                    self.output_w,
+                    self.output_b,
+                    self.key_dim,
+                    self.value_dim,
+                )
 
         # # get query, key, value
         # q = torch.einsum('bqa,ahc->bqhc', q_data, self.query_w) * self.key_dim**(-0.5)

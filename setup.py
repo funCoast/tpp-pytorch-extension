@@ -36,6 +36,20 @@ xsmm_makefile = os.path.join(libxsmm_root, "Makefile")
 xsmm_include = os.path.join(libxsmm_root, "include")
 xsmm_lib = os.path.join(libxsmm_root, "lib")
 
+smelt_root = os.getenv("SMELT_ROOT")
+smelt_include = None
+smelt_lib = None
+enable_smelt = smelt_root is not None
+if enable_smelt:
+    smelt_include = os.getenv("SMELT_INCLUDE", os.path.join(smelt_root, "include"))
+    smelt_lib = os.getenv("SMELT_LIB", os.path.join(smelt_root, "out", "build", "default", "src"))
+    smelt_header = os.path.join(smelt_include, "interface.h")
+    smelt_static = os.path.join(smelt_lib, "libSMELT.a")
+    if not os.path.exists(smelt_header):
+        raise IOError(f"{smelt_header} doesn't exist! Please set SMELT_INCLUDE correctly")
+    if not os.path.exists(smelt_static):
+        raise IOError(f"{smelt_static} doesn't exist! Please build SMELT or set SMELT_LIB correctly")
+
 parlooper_root = os.path.join(cwd, "parlooper")
 if "PARLOOPER_ROOT" in os.environ:
     parlooper_root = os.getenv("PARLOOPER_ROOT")
@@ -156,6 +170,8 @@ sources += glob.glob("src/csrc/gnn/gat/*.cpp")
 sources += glob.glob("src/csrc/dlrm/*.cpp")
 
 extra_compile_args = ["-fopenmp", "-g", "-DLIBXSMM_DEFAULT_CONFIG"]  # , "-O0"]
+if enable_smelt:
+    extra_compile_args.append("-DTPP_WITH_SMELT")
 
 # if platform.processor() != "aarch64":
 #    extra_compile_args.append("-march=native")
@@ -215,7 +231,14 @@ setup(
             "tpp_pytorch_extension._C",
             sources,
             extra_compile_args=extra_compile_args,
-            include_dirs=[xsmm_include, parlooper_include, "{}/src/csrc".format(cwd)],
+            include_dirs=[
+                xsmm_include,
+                parlooper_include,
+                "{}/src/csrc".format(cwd),
+            ]
+            + ([smelt_include] if enable_smelt else []),
+            library_dirs=([smelt_lib] if enable_smelt else []),
+            libraries=(["SMELT"] if enable_smelt else []),
             # library_dirs=[xsmm_lib],
             # libraries=["xsmm"],
         )

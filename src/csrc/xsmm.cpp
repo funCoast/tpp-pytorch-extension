@@ -64,6 +64,30 @@ void init_libxsmm() {
   xsmm_manual_seed(0);
 }
 
+int get_brgemm_backend() {
+  return static_cast<int>(tpp::get_brgemm_backend());
+}
+
+void set_brgemm_backend(int backend) {
+  auto backend_enum = static_cast<tpp::BrgemmBackend>(backend);
+  tpp::set_brgemm_backend(backend_enum);
+#ifdef TPP_WITH_SMELT
+  if (backend_enum == tpp::BrgemmBackend::SMELT) {
+    SMELT::set_auto_context_switch(true);
+  } else {
+    SMELT::set_auto_context_switch(false);
+  }
+#endif
+}
+
+void set_smelt_auto_context_switch(bool enabled) {
+#ifdef TPP_WITH_SMELT
+  SMELT::set_auto_context_switch(enabled);
+#else
+  (void)enabled;
+#endif
+}
+
 int get_vnni_blocking(py::object dtype) {
   c10::ScalarType type = torch::python::detail::py_object_to_dtype(dtype);
   return tpp::get_vnni_block_size(type);
@@ -72,5 +96,11 @@ int get_vnni_blocking(py::object dtype) {
 REGISTER_SUBMODULE(_xsmm, m) {
   m.def("manual_seed", &xsmm_manual_seed, "Set libxsmm random seed");
   m.def("init_libxsmm", &init_libxsmm, "Initialize libxsmm");
+  m.def("get_brgemm_backend", &get_brgemm_backend, "Get BrGEMM backend");
+  m.def("set_brgemm_backend", &set_brgemm_backend, "Set BrGEMM backend");
+  m.def(
+      "set_smelt_auto_context_switch",
+      &set_smelt_auto_context_switch,
+      "Enable or disable SMELT auto context switching");
   m.def("get_vnni_blocking", &get_vnni_blocking, "Get VNNI pack size");
 }

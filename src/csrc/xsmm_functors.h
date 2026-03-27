@@ -15,6 +15,10 @@
 #include <immintrin.h>
 #endif
 
+#include <atomic>
+#include <algorithm>
+#include <array>
+#include <cstring>
 #include <libxsmm.h>
 #include <libxsmm_intrinsics_x86.h>
 #ifdef TORCH_API_INCLUDE_EXTENSION_H
@@ -24,13 +28,19 @@
 #endif
 #include <float8.h>
 #include <string>
+#include <type_traits>
 #include <unordered_map>
+#include <vector>
 #ifdef _OPENMP
 #include <omp.h>
 #else
 #define omp_get_max_threads() 1
 #define omp_get_num_threads() 1
 #define omp_get_thread_num() 0
+#endif
+
+#ifdef TPP_WITH_SMELT
+#include <interface.h>
 #endif
 
 #ifdef DEBUG_TRACE_TPP
@@ -302,6 +312,50 @@ template <typename T>
 inline int get_vnni_block_size() {
   auto xsmm_dtype = XsmmDtype<T>();
   return xsmm_get_vnni_block_size(xsmm_dtype);
+}
+
+enum class BrgemmBackend { LIBXSMM = 0, SMELT = 1 };
+
+inline std::atomic<int>& brgemm_backend_state() {
+  static std::atomic<int> backend{
+      static_cast<int>(BrgemmBackend::LIBXSMM)};
+  return backend;
+}
+
+inline void set_brgemm_backend(BrgemmBackend backend) {
+  brgemm_backend_state().store(
+      static_cast<int>(backend), std::memory_order_relaxed);
+}
+
+inline BrgemmBackend get_brgemm_backend() {
+  return static_cast<BrgemmBackend>(
+      brgemm_backend_state().load(std::memory_order_relaxed));
+}
+
+inline const char* brgemm_backend_name(BrgemmBackend backend) {
+  switch (backend) {
+    case BrgemmBackend::LIBXSMM:
+      return "libxsmm";
+    case BrgemmBackend::SMELT:
+      return "smelt";
+  }
+  return "unknown";
+}
+
+template <typename Tin, typename Tw, typename Tout>
+inline bool brgemm_smelt_supported() {
+#ifdef TPP_WITH_SMELT
+  return std::is_same<Tin, Tw>::value && std::is_same<Tin, Tout>::value &&
+      (std::is_same<Tin, float>::value || std::is_same<Tin, double>::value);
+#else
+  return false;
+#endif
+}
+
+template <typename Tin, typename Tw, typename Tout>
+inline bool brgemm_use_smelt_backend() {
+  return get_brgemm_backend() == BrgemmBackend::SMELT &&
+      brgemm_smelt_supported<Tin, Tw, Tout>();
 }
 
 inline void debug_print_eqn_tree(libxsmm_blasint eqn_no) {
@@ -2208,17 +2262,27 @@ class BrgemmTPP {
         a_trans(a_trans),
         unroll_hint(unroll_hint),
         b_vnni(b_vnni),
-        k_gemm_with_tc(this, 0),
-        k_cfg(this, 1),
-        k_rls(this, 2),
-        k_gemm_no_tc(this, 3) {}
+        k_gemm_with_tc(this, 0, false),
+        k_cfg(this, 1, false),
+        k_rls(this, 2, false),
+        k_gemm_no_tc(this, 3, false) {}
   void config(void* ptr_ = nullptr) {
+    auto backend = get_brgemm_backend();
+    if (backend == BrgemmBackend::SMELT &&
+        brgemm_smelt_supported<Tin, Tw, Tout>()) {
+      return;
+    }
     libxsmm_tilecfg_state* ptr = (libxsmm_tilecfg_state*)ptr_;
     if (!ptr && omp_get_thread_num() == 0)
       ptr = &l_tilestate;
     k_cfg(ptr);
   }
   void release(void* ptr_ = nullptr) {
+    auto backend = get_brgemm_backend();
+    if (backend == BrgemmBackend::SMELT &&
+        brgemm_smelt_supported<Tin, Tw, Tout>()) {
+      return;
+    }
     libxsmm_tilecfg_state* ptr = (libxsmm_tilecfg_state*)ptr_;
     if (!ptr && omp_get_thread_num() == 0)
       ptr = &l_tilestate;
@@ -2230,6 +2294,12 @@ class BrgemmTPP {
       Tout* C,
       unsigned long long count,
       bool no_tile_cfg = false) {
+    auto backend = get_brgemm_backend();
+    if (backend == BrgemmBackend::SMELT &&
+        brgemm_smelt_supported<Tin, Tw, Tout>()) {
+      run_smelt(A, B, C, count);
+      return;
+    }
     libxsmm_gemm_param gemm_param;
     memset(&gemm_param, 0, sizeof(libxsmm_gemm_param));
     gemm_param.op.tertiary = &count;
@@ -2249,6 +2319,12 @@ class BrgemmTPP {
       Tout* C,
       unsigned long long count,
       bool no_tile_cfg = false) {
+    auto backend = get_brgemm_backend();
+    if (backend == BrgemmBackend::SMELT &&
+        brgemm_smelt_supported<Tin, Tw, Tout>()) {
+      run_smelt(A, B, C, count);
+      return;
+    }
     libxsmm_gemm_param gemm_param;
     memset(&gemm_param, 0, sizeof(libxsmm_gemm_param));
     gemm_param.op.tertiary = &count;
@@ -2268,6 +2344,12 @@ class BrgemmTPP {
       Tout* C,
       unsigned long long count,
       bool no_tile_cfg = false) {
+    auto backend = get_brgemm_backend();
+    if (backend == BrgemmBackend::SMELT &&
+        brgemm_smelt_supported<Tin, Tw, Tout>()) {
+      run_smelt(A, B, C, count);
+      return;
+    }
     // VNNI blocking is based on input type to allow weight only quantization
     auto dtype = XsmmDtype<Tin>();
     for (uint64_t c = 0; c < count; c++) {
@@ -2313,14 +2395,141 @@ class BrgemmTPP {
     }
   }
 
+ private:
+  template <typename T>
+  static void copy_strided_rows(
+      const T* src,
+      T* dst,
+      int rows,
+      int cols,
+      int ld) {
+    for (int r = 0; r < rows; ++r) {
+      std::memcpy(
+          dst + static_cast<std::size_t>(r) * cols,
+          src + static_cast<std::size_t>(r) * ld,
+          static_cast<std::size_t>(cols) * sizeof(T));
+    }
+  }
+
+  template <typename T>
+  static void add_compact_block(T* dst, const T* src, int rows, int cols) {
+    for (int r = 0; r < rows; ++r) {
+      for (int c = 0; c < cols; ++c) {
+        dst[static_cast<std::size_t>(r) * cols + c] +=
+            src[static_cast<std::size_t>(r) * cols + c];
+      }
+    }
+  }
+
+  template <typename T>
+  static void scatter_compact_rows(
+      const T* src,
+      T* dst,
+      int rows,
+      int cols,
+      int ld) {
+    for (int r = 0; r < rows; ++r) {
+      std::memcpy(
+          dst + static_cast<std::size_t>(r) * ld,
+          src + static_cast<std::size_t>(r) * cols,
+          static_cast<std::size_t>(cols) * sizeof(T));
+    }
+  }
+
+  void run_smelt(Tin* A, Tw* B, Tout* C, unsigned long long count) {
+#ifdef TPP_WITH_SMELT
+    using SmeltT = Tin;
+    const char transa = (a_trans == 1) ? 'T' : 'N';
+    const char transb = 'N';
+    const int a_rows = (transa == 'N') ? static_cast<int>(M) : static_cast<int>(K);
+    const int a_cols = (transa == 'N') ? static_cast<int>(K) : static_cast<int>(M);
+    const int b_rows = static_cast<int>(K);
+    const int b_cols = static_cast<int>(N);
+    std::vector<SmeltT> a_compact(static_cast<std::size_t>(a_rows) * a_cols);
+    std::vector<SmeltT> b_compact(static_cast<std::size_t>(b_rows) * b_cols);
+    std::vector<SmeltT> c_block(static_cast<std::size_t>(M) * N);
+    std::vector<SmeltT> c_accum(static_cast<std::size_t>(M) * N);
+
+    if (beta != 0.0f) {
+      for (int i = 0; i < M; ++i) {
+        for (int j = 0; j < N; ++j) {
+          c_accum[static_cast<std::size_t>(i) * N + j] =
+              static_cast<SmeltT>(beta) *
+              static_cast<SmeltT>(C[static_cast<std::size_t>(i) * ldc + j]);
+        }
+      }
+    }
+
+    for (unsigned long long c = 0; c < count; ++c) {
+      const SmeltT* A_ = reinterpret_cast<const SmeltT*>(&A[c * str_a]);
+      const SmeltT* B_ = reinterpret_cast<const SmeltT*>(&B[c * str_b]);
+
+      copy_strided_rows(A_, a_compact.data(), a_rows, a_cols, lda);
+      copy_strided_rows(B_, b_compact.data(), b_rows, b_cols, ldb);
+      std::fill(c_block.begin(), c_block.end(), SmeltT{0});
+
+      if constexpr (std::is_same<SmeltT, double>::value) {
+        const double* const a_ptr[1] = {a_compact.data()};
+        const double* const b_ptr[1] = {b_compact.data()};
+        double* const c_ptr[1] = {c_block.data()};
+        SMELT::dgemm_batch(
+            transa,
+            transb,
+            static_cast<int>(M),
+            static_cast<int>(N),
+            static_cast<int>(K),
+            1,
+            a_ptr,
+            b_ptr,
+            c_ptr);
+      } else {
+        const float* const a_ptr[1] = {a_compact.data()};
+        const float* const b_ptr[1] = {b_compact.data()};
+        float* const c_ptr[1] = {c_block.data()};
+        SMELT::sgemm_batch(
+            transa,
+            transb,
+            static_cast<int>(M),
+            static_cast<int>(N),
+            static_cast<int>(K),
+            1,
+            a_ptr,
+            b_ptr,
+            c_ptr);
+      }
+
+      add_compact_block(c_accum.data(), c_block.data(), static_cast<int>(M), static_cast<int>(N));
+    }
+
+    scatter_compact_rows(
+        c_accum.data(),
+        C,
+        static_cast<int>(M),
+        static_cast<int>(N),
+        static_cast<int>(ldc));
+#else
+    (void)A;
+    (void)B;
+    (void)C;
+    (void)count;
+#endif
+  }
+
+ public:
   long flops() {
     return 2L * M * N * K;
   }
 
+ private:
   class BrgemmKernel : public BaseTPP {
    public:
     BrgemmKernel() {}
-    BrgemmKernel(BrgemmTPP* p, int config) : p(p), config(config) {
+    BrgemmKernel(BrgemmTPP* p, int config, bool disable_jit = false)
+        : p(p), config(config) {
+      if (disable_jit) {
+        initialized = false;
+        return;
+      }
       auto dt_in = XsmmDtype<Tin>();
       auto dt_wt = XsmmDtype<Tw>();
       auto dt_out = XsmmDtype<Tout>();

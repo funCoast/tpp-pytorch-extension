@@ -17,8 +17,12 @@ try:
 except:
     extend_profiler = None
 
-from .utils.xsmm import manual_seed
+from .utils.xsmm import BrgemmBackend
+from .utils.xsmm import brgemm_backend
+from .utils.xsmm import get_brgemm_backend
 from .utils.xsmm import get_vnni_blocking
+from .utils.xsmm import manual_seed
+from .utils.xsmm import set_brgemm_backend
 from .utils import blocked_layout
 from .utils import float8
 from . import optim

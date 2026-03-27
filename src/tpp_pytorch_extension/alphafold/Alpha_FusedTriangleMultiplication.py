@@ -17,6 +17,7 @@ from torch.autograd import Function
 from tpp_pytorch_extension._C import (
     _alpha_attention as Alpha_FusedTriangleMultiplication_cpp,
 )
+from tpp_pytorch_extension.utils.xsmm import brgemm_backend
 
 
 class FusedTriangleMultiplicationFunction(Function):
@@ -64,100 +65,9 @@ class FusedTriangleMultiplicationFunction(Function):
         return act
 
 
-def FusedTriangleMultiplicationOpti_forward(self, act, mask):
+def FusedTriangleMultiplicationOpti_forward(self, act, mask, backend="libxsmm"):
     mask = mask[..., None]
-    if (
-        act.dtype == torch.float16
-        or mask.dtype == torch.float16
-        or self.left_norm_input.weight.dtype == torch.float16
-        or self.left_norm_input.bias.dtype == torch.float16
-        or self.projection.weight.dtype == torch.float16
-        or self.projection.bias.dtype == torch.float16
-        or self.gate.weight.dtype == torch.float16
-        or self.gate.bias.dtype == torch.float16
-        or self.center_norm.weight.dtype == torch.float16
-        or self.center_norm.bias.dtype == torch.float16
-        or self.output_projection.weight.dtype == torch.float16
-        or self.output_projection.bias.dtype == torch.float16
-        or self.gating_linear.weight.dtype == torch.float16
-        or self.gating_linear.bias.dtype == torch.float16
-    ):
-        act = FusedTriangleMultiplicationFunction.apply(
-            act.to(torch.float16),
-            mask.to(torch.float32),
-            self.c_equation,
-            self.left_norm_input.weight.to(torch.float16),
-            self.left_norm_input.bias.to(torch.float16),
-            self.projection.weight.to(torch.float16),
-            self.projection.bias.to(torch.float32),
-            self.gate.weight.to(torch.float16),
-            self.gate.bias.to(torch.float32),
-            self.center_norm.weight.to(torch.float16),
-            self.center_norm.bias.to(torch.float16),
-            self.output_projection.weight.to(torch.float16),
-            self.output_projection.bias.to(torch.float32),
-            self.gating_linear.weight.to(torch.float16),
-            self.gating_linear.bias.to(torch.float32),
-        )
-    else:
-        act = FusedTriangleMultiplicationFunction.apply(
-            act,
-            mask,
-            self.c_equation,
-            self.left_norm_input.weight,
-            self.left_norm_input.bias,
-            self.projection.weight,
-            self.projection.bias,
-            self.gate.weight,
-            self.gate.bias,
-            self.center_norm.weight,
-            self.center_norm.bias,
-            self.output_projection.weight,
-            self.output_projection.bias,
-            self.gating_linear.weight,
-            self.gating_linear.bias,
-        )
-    return act
-
-
-class FusedTriangleMultiplicationOpti(nn.Module):
-
-    #   def __init__(self,config, global_config, act_dim):
-    def __init__(self, equation, num_intermediate_channel, act_dim):
-        """Builds TriangleMultiplication module.
-
-        Arguments:
-          act: Pair activations, shape [N_res, N_res, c_z]
-          mask: Pair mask, shape [N_res, N_res].
-          is_training: Whether the module is in training mode.
-
-        Returns:
-          Outputs, same shape/type as act.
-        """
-        super().__init__()
-        # self.config = config
-        # self.global_config = global_config
-        # self.c_equation = self.config['equation']
-        self.c_equation = equation
-        # self.num_intermediate_channel = num_intermediate_channel
-        self.left_norm_input = nn.LayerNorm(act_dim)
-        self.projection = nn.Linear(act_dim, 2 * num_intermediate_channel)
-        self.gate = nn.Linear(num_intermediate_channel, 2 * num_intermediate_channel)
-        self.center_norm = nn.LayerNorm(num_intermediate_channel)
-        self.output_projection = nn.Linear(num_intermediate_channel, act_dim)
-        self.gating_linear = nn.Linear(act_dim, act_dim)
-
-    def forward(self, act, mask):
-        mask = mask[..., None]
-        # left_act = self.left_norm_input(act)
-        # proj_act = mask * self.projection(left_act)
-        # proj_act *= torch.sigmoid(self.gate(left_act))
-        # left_proj_act = proj_act[:, :, :self.num_intermediate_channel]
-        # right_proj_act = proj_act[:, :, self.num_intermediate_channel:]
-        # act = torch.einsum(self.c_equation, left_proj_act, right_proj_act)
-        # act = self.center_norm(act)
-        # act = self.output_projection(act)
-        # act *= torch.sigmoid(self.gating_linear(left_act))
+    with brgemm_backend(backend):
         if (
             act.dtype == torch.float16
             or mask.dtype == torch.float16
@@ -209,4 +119,97 @@ class FusedTriangleMultiplicationOpti(nn.Module):
                 self.gating_linear.weight,
                 self.gating_linear.bias,
             )
+    return act
+
+
+class FusedTriangleMultiplicationOpti(nn.Module):
+
+    #   def __init__(self,config, global_config, act_dim):
+    def __init__(self, equation, num_intermediate_channel, act_dim):
+        """Builds TriangleMultiplication module.
+
+        Arguments:
+          act: Pair activations, shape [N_res, N_res, c_z]
+          mask: Pair mask, shape [N_res, N_res].
+          is_training: Whether the module is in training mode.
+
+        Returns:
+          Outputs, same shape/type as act.
+        """
+        super().__init__()
+        # self.config = config
+        # self.global_config = global_config
+        # self.c_equation = self.config['equation']
+        self.c_equation = equation
+        # self.num_intermediate_channel = num_intermediate_channel
+        self.left_norm_input = nn.LayerNorm(act_dim)
+        self.projection = nn.Linear(act_dim, 2 * num_intermediate_channel)
+        self.gate = nn.Linear(num_intermediate_channel, 2 * num_intermediate_channel)
+        self.center_norm = nn.LayerNorm(num_intermediate_channel)
+        self.output_projection = nn.Linear(num_intermediate_channel, act_dim)
+        self.gating_linear = nn.Linear(act_dim, act_dim)
+
+    def forward(self, act, mask, backend="libxsmm"):
+        mask = mask[..., None]
+        # left_act = self.left_norm_input(act)
+        # proj_act = mask * self.projection(left_act)
+        # proj_act *= torch.sigmoid(self.gate(left_act))
+        # left_proj_act = proj_act[:, :, :self.num_intermediate_channel]
+        # right_proj_act = proj_act[:, :, self.num_intermediate_channel:]
+        # act = torch.einsum(self.c_equation, left_proj_act, right_proj_act)
+        # act = self.center_norm(act)
+        # act = self.output_projection(act)
+        # act *= torch.sigmoid(self.gating_linear(left_act))
+        with brgemm_backend(backend):
+            if (
+                act.dtype == torch.float16
+                or mask.dtype == torch.float16
+                or self.left_norm_input.weight.dtype == torch.float16
+                or self.left_norm_input.bias.dtype == torch.float16
+                or self.projection.weight.dtype == torch.float16
+                or self.projection.bias.dtype == torch.float16
+                or self.gate.weight.dtype == torch.float16
+                or self.gate.bias.dtype == torch.float16
+                or self.center_norm.weight.dtype == torch.float16
+                or self.center_norm.bias.dtype == torch.float16
+                or self.output_projection.weight.dtype == torch.float16
+                or self.output_projection.bias.dtype == torch.float16
+                or self.gating_linear.weight.dtype == torch.float16
+                or self.gating_linear.bias.dtype == torch.float16
+            ):
+                act = FusedTriangleMultiplicationFunction.apply(
+                    act.to(torch.float16),
+                    mask.to(torch.float32),
+                    self.c_equation,
+                    self.left_norm_input.weight.to(torch.float16),
+                    self.left_norm_input.bias.to(torch.float16),
+                    self.projection.weight.to(torch.float16),
+                    self.projection.bias.to(torch.float32),
+                    self.gate.weight.to(torch.float16),
+                    self.gate.bias.to(torch.float32),
+                    self.center_norm.weight.to(torch.float16),
+                    self.center_norm.bias.to(torch.float16),
+                    self.output_projection.weight.to(torch.float16),
+                    self.output_projection.bias.to(torch.float32),
+                    self.gating_linear.weight.to(torch.float16),
+                    self.gating_linear.bias.to(torch.float32),
+                )
+            else:
+                act = FusedTriangleMultiplicationFunction.apply(
+                    act,
+                    mask,
+                    self.c_equation,
+                    self.left_norm_input.weight,
+                    self.left_norm_input.bias,
+                    self.projection.weight,
+                    self.projection.bias,
+                    self.gate.weight,
+                    self.gate.bias,
+                    self.center_norm.weight,
+                    self.center_norm.bias,
+                    self.output_projection.weight,
+                    self.output_projection.bias,
+                    self.gating_linear.weight,
+                    self.gating_linear.bias,
+                )
         return act
