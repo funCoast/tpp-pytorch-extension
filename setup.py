@@ -238,7 +238,7 @@ setup(
             ]
             + ([smelt_include] if enable_smelt else []),
             library_dirs=([smelt_lib] if enable_smelt else []),
-            libraries=(["SMELT"] if enable_smelt else []),
+            libraries=(["SMELT", "IR"] if enable_smelt else []),
             # library_dirs=[xsmm_lib],
             # libraries=["xsmm"],
         )
