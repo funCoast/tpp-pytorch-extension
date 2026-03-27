@@ -343,7 +343,7 @@ inline const char* brgemm_backend_name(BrgemmBackend backend) {
 }
 
 template <typename Tin, typename Tw, typename Tout>
-inline bool brgemm_smelt_supported() {
+constexpr bool brgemm_smelt_supported() {
 #ifdef TPP_WITH_SMELT
   return std::is_same<Tin, Tw>::value && std::is_same<Tin, Tout>::value &&
       (std::is_same<Tin, float>::value || std::is_same<Tin, double>::value);
@@ -2268,9 +2268,10 @@ class BrgemmTPP {
         k_gemm_no_tc(this, 3, false) {}
   void config(void* ptr_ = nullptr) {
     auto backend = get_brgemm_backend();
-    if (backend == BrgemmBackend::SMELT &&
-        brgemm_smelt_supported<Tin, Tw, Tout>()) {
-      return;
+    if constexpr (brgemm_smelt_supported<Tin, Tw, Tout>()) {
+      if (backend == BrgemmBackend::SMELT) {
+        return;
+      }
     }
     libxsmm_tilecfg_state* ptr = (libxsmm_tilecfg_state*)ptr_;
     if (!ptr && omp_get_thread_num() == 0)
@@ -2279,9 +2280,10 @@ class BrgemmTPP {
   }
   void release(void* ptr_ = nullptr) {
     auto backend = get_brgemm_backend();
-    if (backend == BrgemmBackend::SMELT &&
-        brgemm_smelt_supported<Tin, Tw, Tout>()) {
-      return;
+    if constexpr (brgemm_smelt_supported<Tin, Tw, Tout>()) {
+      if (backend == BrgemmBackend::SMELT) {
+        return;
+      }
     }
     libxsmm_tilecfg_state* ptr = (libxsmm_tilecfg_state*)ptr_;
     if (!ptr && omp_get_thread_num() == 0)
@@ -2295,10 +2297,11 @@ class BrgemmTPP {
       unsigned long long count,
       bool no_tile_cfg = false) {
     auto backend = get_brgemm_backend();
-    if (backend == BrgemmBackend::SMELT &&
-        brgemm_smelt_supported<Tin, Tw, Tout>()) {
-      run_smelt(A, B, C, count);
-      return;
+    if constexpr (brgemm_smelt_supported<Tin, Tw, Tout>()) {
+      if (backend == BrgemmBackend::SMELT) {
+        run_smelt(A, B, C, count);
+        return;
+      }
     }
     libxsmm_gemm_param gemm_param;
     memset(&gemm_param, 0, sizeof(libxsmm_gemm_param));
@@ -2320,10 +2323,11 @@ class BrgemmTPP {
       unsigned long long count,
       bool no_tile_cfg = false) {
     auto backend = get_brgemm_backend();
-    if (backend == BrgemmBackend::SMELT &&
-        brgemm_smelt_supported<Tin, Tw, Tout>()) {
-      run_smelt(A, B, C, count);
-      return;
+    if constexpr (brgemm_smelt_supported<Tin, Tw, Tout>()) {
+      if (backend == BrgemmBackend::SMELT) {
+        run_smelt(A, B, C, count);
+        return;
+      }
     }
     libxsmm_gemm_param gemm_param;
     memset(&gemm_param, 0, sizeof(libxsmm_gemm_param));
@@ -2345,10 +2349,11 @@ class BrgemmTPP {
       unsigned long long count,
       bool no_tile_cfg = false) {
     auto backend = get_brgemm_backend();
-    if (backend == BrgemmBackend::SMELT &&
-        brgemm_smelt_supported<Tin, Tw, Tout>()) {
-      run_smelt(A, B, C, count);
-      return;
+    if constexpr (brgemm_smelt_supported<Tin, Tw, Tout>()) {
+      if (backend == BrgemmBackend::SMELT) {
+        run_smelt(A, B, C, count);
+        return;
+      }
     }
     // VNNI blocking is based on input type to allow weight only quantization
     auto dtype = XsmmDtype<Tin>();
@@ -2438,6 +2443,13 @@ class BrgemmTPP {
 
   void run_smelt(Tin* A, Tw* B, Tout* C, unsigned long long count) {
 #ifdef TPP_WITH_SMELT
+    if constexpr (!brgemm_smelt_supported<Tin, Tw, Tout>()) {
+      (void)A;
+      (void)B;
+      (void)C;
+      (void)count;
+      return;
+    } else {
     using SmeltT = Tin;
     const char transa = (a_trans == 1) ? 'T' : 'N';
     const char transb = 'N';
@@ -2507,6 +2519,7 @@ class BrgemmTPP {
         static_cast<int>(M),
         static_cast<int>(N),
         static_cast<int>(ldc));
+    }
 #else
     (void)A;
     (void)B;
