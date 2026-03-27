@@ -17,6 +17,12 @@
 #include <vector>
 #include "vectorLinkedList.h"
 
+#ifdef __APPLE__
+#define APPLE_SIG_PREFIX "_"
+#else
+#define APPLE_SIG_PREFIX ""
+#endif
+
 namespace IR
 {
 
@@ -74,8 +80,8 @@ private:
         std::string target;
     };
 
-    static constexpr const char *fp64KernelSymbol = "__Z15gemm_kernel_optxPPdS0_S0_iii";
-    static constexpr const char *fp32KernelSymbol = "__Z15gemm_kernel_optxPPfS0_S0_iii";
+    static constexpr const char *fp64KernelSymbol = APPLE_SIG_PREFIX "_Z15gemm_kernel_optxPPdS0_S0_iii";
+    static constexpr const char *fp32KernelSymbol = APPLE_SIG_PREFIX "_Z15gemm_kernel_optxPPfS0_S0_iii";
 
     TilePrimitiveDescriptor::TRANS_TYPE trans_type = TilePrimitiveDescriptor::TRANS_TYPE::GEMM_NN;
     bool kernel_is_fp64 = false;

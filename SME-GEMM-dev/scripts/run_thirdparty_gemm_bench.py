@@ -75,7 +75,6 @@ def build_and_run_openblas(
             f"-L{runtime_dir}",
             f"-Wl,-rpath,{runtime_dir}",
             "-lgfortran",
-            "-lquadmath",
             "-lm",
             "-lpthread",
         ]

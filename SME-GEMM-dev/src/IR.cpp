@@ -100,15 +100,23 @@ void IR::Function::buildMlaSVE(TilePrimitiveDescriptor &desc)
         std::vector<LoadSVEInst *> loadVecInsts;
         for (const auto &[i, elems] : enumerate(vecDesc))
         {
-            auto st = elems.column - vecDesc.element_offest(i);
-            auto ed = st + elems.column_step;
-            LoadSVEInst *loadVec = get_load(op_dtype,
-                                            row_mode ? MemoryTarget::GEMM_B : MemoryTarget::GEMM_A,
-                                            st,
-                                            elems.column_step,
-                                            elems.batch,
-                                            0,
-                                            vecDesc.element_offest(i));
+            const auto elem_offset = static_cast<int>(vecDesc.element_offest(i));
+            const auto target = row_mode ? MemoryTarget::GEMM_B : MemoryTarget::GEMM_A;
+
+            // For layouts lowered as k + column * K, subtracting element_offset from
+            // column is incorrect because it becomes -offset * K. Keep column intact
+            // and apply lane alignment via k_offset instead.
+            const bool column_scaled_by_k =
+                (target == MemoryTarget::GEMM_A && (desc.trans_type == TilePrimitiveDescriptor::GEMM_NN ||
+                                                    desc.trans_type == TilePrimitiveDescriptor::GEMM_NT)) ||
+                (target == MemoryTarget::GEMM_B && (desc.trans_type == TilePrimitiveDescriptor::GEMM_NT ||
+                                                    desc.trans_type == TilePrimitiveDescriptor::GEMM_TT));
+
+            const int st = column_scaled_by_k ? elems.column : elems.column - elem_offset;
+            const int k_offset = column_scaled_by_k ? -elem_offset : 0;
+
+            LoadSVEInst *loadVec =
+                get_load(op_dtype, target, st, elems.column_step, elems.batch, k_offset, elem_offset);
             loadVecInsts.push_back(loadVec);
         }
         Instruction *vec_inst = loadVecInsts[0];

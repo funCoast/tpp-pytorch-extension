@@ -287,7 +287,7 @@ build_openblas() {
 
     # macOS 下为 gfortran runtime 补链接参数
     if [[ "${OPENBLAS_NOFORTRAN:-0}" != "1" && -n "${gfortran_runtime_dir}" ]]; then
-        args+=("FEXTRALIB=-L${gfortran_runtime_dir} -lgfortran -lquadmath -lm")
+        args+=("FEXTRALIB=-L${gfortran_runtime_dir} -lgfortran -lm")
     fi
 
     log "OS=${OS}, ARCH=${ARCH}"
@@ -362,7 +362,7 @@ install_openblas() {
     fi
 
     if [[ "${OPENBLAS_NOFORTRAN:-0}" != "1" && -n "${gfortran_runtime_dir}" ]]; then
-        args+=("FEXTRALIB=-L${gfortran_runtime_dir} -lgfortran -lquadmath -lm")
+        args+=("FEXTRALIB=-L${gfortran_runtime_dir} -lgfortran -lm")
     fi
 
     log "Detected Fortran compiler: ${fc:-<none>}"

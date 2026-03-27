@@ -13,17 +13,10 @@
 #endif
 #include "shape.h"
 
-#if defined(__clang__) && defined(__aarch64__)
-#define SME_NEW_ZA __arm_new("za")
-#define SME_INOUT_ZA __arm_inout("za")
-#define SME_STREAMING __arm_streaming
-#define SME_STREAMING_COMPAT __arm_streaming_compatible
-#else
 #define SME_NEW_ZA
 #define SME_INOUT_ZA
 #define SME_STREAMING
 #define SME_STREAMING_COMPAT
-#endif
 
 SME_NEW_ZA void gemm_kernel_opt(int64_t batch, FPTYPE **A, FPTYPE **B, FPTYPE **C, int, int, int K) SME_STREAMING;
 using runtime_kernel_fn = void(int64_t batch, FPTYPE **A, FPTYPE **B, FPTYPE **C, int, int, int K) SME_STREAMING;
