@@ -1,5 +1,6 @@
 #include "IR.h"
 #include "instructions.h"
+#include <chrono>
 #include <algorithm>
 #include <cstdint>
 #include <format>

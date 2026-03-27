@@ -10,6 +10,7 @@ out
 *.png
 *.svg
 *.csv
+*.pdf
 CMakeUserPresets.json
 .vscode
 

@@ -17,6 +17,21 @@ namespace
     "fmopa za1.d, p0/m, p0/m, z0.d, z1.d\n\t"                                                                          \
     "fmopa za2.d, p0/m, p0/m, z0.d, z1.d\n\t"                                                                          \
     "fmopa za3.d, p0/m, p0/m, z0.d, z1.d\n\t"
+
+#ifdef __APPLE__
+#define ASM_SVE_MLA                                                                                                    \
+    "fmla z2.d, p0/m, z3.d, z4.d\n\t"                                                                                  \
+    "fmla z5.d, p0/m, z3.d, z4.d\n\t"                                                                                  \
+    "//fmla z6.d, p0/m, z3.d, z4.d\n\t"                                                                                \
+    "//fmla z7.d, p0/m, z3.d, z4.d\n\t"                                                                                \
+    "//fmla z8.d, p0/m, z3.d, z4.d\n\t"                                                                                \
+    "//fmla z9.d, p0/m, z3.d, z4.d\n\t"                                                                                \
+    "//fmla z10.d, p0/m, z3.d, z4.d\n\t"                                                                               \
+    "//fmla z11.d, p0/m, z3.d, z4.d\n\t"                                                                               \
+    "//fmla z12.d, p0/m, z3.d, z4.d\n\t"
+constexpr int kMlaCount = 1;
+constexpr const char *arch = "M4 Pro";
+#else
 #define ASM_SVE_MLA                                                                                                    \
     "fmla z2.d, p0/m, z3.d, z4.d\n\t"                                                                                  \
     "fmla z5.d, p0/m, z3.d, z4.d\n\t"                                                                                  \
@@ -28,6 +43,10 @@ namespace
     "fmla z11.d, p0/m, z3.d, z4.d\n\t"                                                                                 \
     "fmla z12.d, p0/m, z3.d, z4.d\n\t"
 
+constexpr int kMlaCount = 9;
+constexpr const char *arch = "72F";
+#endif
+
 #define ASM_ZA_MOVA                                                                                                    \
     "mova z2.d, p7/m, za7v.d[w12, 0]\n\t"                                                                              \
     "mova z3.d, p7/m, za7v.d[w12, 0]\n\t"                                                                              \
@@ -37,8 +56,8 @@ namespace
 #define REP2(x) x x
 #define REP4(x) REP2(x) REP2(x)
 
+constexpr int kMovaCount = 4;
 constexpr int kMopaCount = 4;
-constexpr int kTargetCount = 4;
 
 enum class TargetKind
 {
@@ -78,7 +97,7 @@ const char *mode_name(RunMode mode)
     case RunMode::MopaOnly:
         return "mopa_only";
     case RunMode::TargetOnly:
-        return "target_only";
+        return "companion_only";
     case RunMode::Mixed:
         return "mixed";
     }
@@ -190,7 +209,7 @@ bool parse_target(const char *arg, TargetKind &target)
 
 void print_usage(const char *argv0)
 {
-    std::cout << "Usage: " << argv0 << " [--target sve_mla|za_mova]"
+    std::cout << "Usage: " << argv0 << " [--target sve_mla|za_mova] [--companion sve_mla|za_mova]"
               << " [--iters N] [--warmup N] [--repeats N]"
               << " [--csv path] [--append]\n";
 }
@@ -199,11 +218,11 @@ bool parse_args(int argc, char **argv, Config &cfg)
 {
     for (int i = 1; i < argc; ++i)
     {
-        if (std::strcmp(argv[i], "--target") == 0 && i + 1 < argc)
+        if ((std::strcmp(argv[i], "--target") == 0 || std::strcmp(argv[i], "--companion") == 0) && i + 1 < argc)
         {
             if (!parse_target(argv[++i], cfg.target))
             {
-                std::cerr << "Invalid --target value\n";
+                std::cerr << "Invalid --target/--companion value\n";
                 return false;
             }
             continue;
@@ -264,13 +283,13 @@ void emit_csv(const Config &cfg, double t_mopa_only, double t_target_only, doubl
 
     if (write_header)
     {
-        out << "target,mopa_count,target_count,iters,repeats,mode,time_ns,ns_per_iter\n";
+        out << "companion,mopa_count,companion_count,iters,repeats,mode,time_ns,ns_per_iter\n";
     }
 
     const auto write_row = [&](const char *mode, double ns_total) {
-        out << target_name(cfg.target) << "," << kMopaCount << "," << kTargetCount << "," << cfg.iters << ","
-            << cfg.repeats << "," << mode << "," << ns_total << "," << (ns_total / static_cast<double>(cfg.iters))
-            << "\n";
+        out << target_name(cfg.target) << "," << kMopaCount << ","
+            << (cfg.target == TargetKind::ZaMova ? kMovaCount : kMlaCount) << "," << cfg.iters << "," << cfg.repeats
+            << "," << mode << "," << ns_total << "," << (ns_total / cfg.iters) << "\n";
     };
 
     write_row(mode_name(RunMode::MopaOnly), t_mopa_only);
@@ -293,13 +312,13 @@ int main(int argc, char **argv)
     const double t_target_only = bench_median_ns(cfg, RunMode::TargetOnly);
     const double t_mixed = bench_median_ns(cfg, RunMode::Mixed);
 
-    std::cout << "target=" << target_name(cfg.target) << "\n";
+    std::cout << "companion=" << target_name(cfg.target) << "\n";
     std::cout << "mopa_count=" << kMopaCount << "\n";
-    std::cout << "target_count=" << kTargetCount << "\n";
+    std::cout << "companion_count=" << (cfg.target == TargetKind::ZaMova ? kMovaCount : kMlaCount) << "\n";
     std::cout << "iters=" << cfg.iters << "\n";
     std::cout << "repeats=" << cfg.repeats << "\n";
     std::cout << "mopa_only_ns=" << t_mopa_only << "\n";
-    std::cout << "target_only_ns=" << t_target_only << "\n";
+    std::cout << "companion_only_ns=" << t_target_only << "\n";
     std::cout << "mixed_ns=" << t_mixed << "\n";
 
     emit_csv(cfg, t_mopa_only, t_target_only, t_mixed);

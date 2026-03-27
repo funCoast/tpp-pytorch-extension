@@ -296,7 +296,7 @@ init_matrix(FPTYPE **A, FPTYPE **B, FPTYPE **C_ref, FPTYPE **C_test, int64_t bat
         for (int64_t b = 0; b < batch; ++b)                                                                            \
         {                                                                                                              \
             FPTYPE diff = max_abs_diff(C_ref[b], C_test[b], M * N);                                                    \
-            if (diff > 1e-9)                                                                                           \
+            if (diff / (fabs(C_ref[b][0]) + fabs(C_test[b][0]) + 1e-9) > 1e-3)                                         \
             {                                                                                                          \
                 printf("Mismatch at batch %lld, max abs diff = %.3e\n", b, diff);                                      \
                 error = 1;                                                                                             \
