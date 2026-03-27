@@ -35,6 +35,15 @@ def _normalize_backend(backend):
     return BrgemmBackend(int(backend))
 
 
+def _backend_display_name(backend):
+    backend = _normalize_backend(backend)
+    return "SME-GEMM-dev" if backend == BrgemmBackend.SMELT else "libxsmm"
+
+
+def _debug_print_backend(backend):
+    print(f"[SME-GEMM-dev DEBUG]:当前使用的是 {_backend_display_name(backend)}")
+
+
 def manual_seed(seed):
     xsmm_cpp.manual_seed(seed)
 
@@ -59,6 +68,7 @@ def set_brgemm_backend(backend):
     backend = _normalize_backend(backend)
     xsmm_cpp.set_brgemm_backend(int(backend))
     xsmm_cpp.set_smelt_auto_context_switch(backend == BrgemmBackend.SMELT)
+    _debug_print_backend(backend)
 
 
 @contextmanager
@@ -77,6 +87,7 @@ def brgemm_backend(backend):
 def _apply_brgemm_backend_from_env():
     backend = os.getenv(_BRGEMM_BACKEND_ENV)
     if backend is None or backend.strip() == "":
+        _debug_print_backend(get_brgemm_backend())
         return
     set_brgemm_backend(backend)
 
