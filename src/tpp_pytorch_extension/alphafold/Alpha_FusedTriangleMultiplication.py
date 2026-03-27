@@ -65,7 +65,7 @@ class FusedTriangleMultiplicationFunction(Function):
         return act
 
 
-def FusedTriangleMultiplicationOpti_forward(self, act, mask, backend="libxsmm"):
+def FusedTriangleMultiplicationOpti_forward(self, act, mask, backend=None):
     mask = mask[..., None]
     with brgemm_backend(backend):
         if (
@@ -149,7 +149,7 @@ class FusedTriangleMultiplicationOpti(nn.Module):
         self.output_projection = nn.Linear(num_intermediate_channel, act_dim)
         self.gating_linear = nn.Linear(act_dim, act_dim)
 
-    def forward(self, act, mask, backend="libxsmm"):
+    def forward(self, act, mask, backend=None):
         mask = mask[..., None]
         # left_act = self.left_norm_input(act)
         # proj_act = mask * self.projection(left_act)

@@ -8,6 +8,7 @@
 # Author: Dhiraj Kalamkar (Intel Corp.)                                       #
 ###############################################################################
 
+import os
 from .._C import _xsmm as xsmm_cpp
 from contextlib import contextmanager
 from enum import IntEnum
@@ -16,6 +17,9 @@ from enum import IntEnum
 class BrgemmBackend(IntEnum):
     LIBXSMM = 0
     SMELT = 1
+
+
+_BRGEMM_BACKEND_ENV = "TPP_BRGEMM_BACKEND"
 
 
 def _normalize_backend(backend):
@@ -59,6 +63,9 @@ def set_brgemm_backend(backend):
 
 @contextmanager
 def brgemm_backend(backend):
+    if backend is None:
+        yield get_brgemm_backend()
+        return
     previous = get_brgemm_backend()
     set_brgemm_backend(backend)
     try:
@@ -67,6 +74,14 @@ def brgemm_backend(backend):
         set_brgemm_backend(previous)
 
 
+def _apply_brgemm_backend_from_env():
+    backend = os.getenv(_BRGEMM_BACKEND_ENV)
+    if backend is None or backend.strip() == "":
+        return
+    set_brgemm_backend(backend)
+
+
 # initialize libxsmm library and random number generator
 xsmm_cpp.init_libxsmm()
 manual_seed(12345)
+_apply_brgemm_backend_from_env()

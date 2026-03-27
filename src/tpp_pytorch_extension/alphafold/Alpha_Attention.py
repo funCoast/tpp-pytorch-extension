@@ -61,7 +61,7 @@ class AlphaAttentionFunction(Function):
 
 
 def GatingAttentionOpti_forward(
-    self, q_data, m_data, bias, nonbatched_bias=torch.Tensor(), backend="libxsmm"
+    self, q_data, m_data, bias, nonbatched_bias=torch.Tensor(), backend=None
 ):
     """Builds Attention module.
     Arguments:
@@ -188,7 +188,7 @@ class GatingAttentionOpti(nn.Module):
         return time.time()
 
     def forward(
-        self, q_data, m_data, bias, nonbatched_bias=torch.Tensor(), backend="libxsmm"
+        self, q_data, m_data, bias, nonbatched_bias=torch.Tensor(), backend=None
     ):
         """Builds Attention module.
         Arguments:

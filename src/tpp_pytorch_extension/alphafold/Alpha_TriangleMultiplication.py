@@ -73,7 +73,7 @@ class TriangleMultiplicationFunction(Function):
         return act
 
 
-def TriangleMultiplicationOpti_forward(self, act, mask, backend="libxsmm"):
+def TriangleMultiplicationOpti_forward(self, act, mask, backend=None):
     mask = mask[..., None]
     with brgemm_backend(backend):
         if (
@@ -175,7 +175,7 @@ class TriangleMultiplicationOpti(nn.Module):
         self.output_projection = nn.Linear(act_dim, act_dim)
         self.gating_linear = nn.Linear(act_dim, act_dim)
 
-    def forward(self, act, mask, backend="libxsmm"):
+    def forward(self, act, mask, backend=None):
         mask = mask[..., None]
         # act = self.layer_norm_input(act)
         # input_act = act # For gate
