@@ -44,11 +44,13 @@ if enable_smelt:
     smelt_include = os.getenv("SMELT_INCLUDE", os.path.join(smelt_root, "include"))
     smelt_lib = os.getenv("SMELT_LIB", os.path.join(smelt_root, "out", "build", "default", "src"))
     smelt_header = os.path.join(smelt_include, "interface.h")
-    smelt_static = os.path.join(smelt_lib, "libSMELT.a")
+    smelt_shared = os.path.join(smelt_lib, "libSMELT.so")
     if not os.path.exists(smelt_header):
         raise IOError(f"{smelt_header} doesn't exist! Please set SMELT_INCLUDE correctly")
-    if not os.path.exists(smelt_static):
-        raise IOError(f"{smelt_static} doesn't exist! Please build SMELT or set SMELT_LIB correctly")
+    if not os.path.exists(smelt_shared):
+        raise IOError(
+            f"{smelt_shared} doesn't exist! Please build SMELT as a shared library or set SMELT_LIB correctly"
+        )
 
 parlooper_root = os.path.join(cwd, "parlooper")
 if "PARLOOPER_ROOT" in os.environ:
@@ -71,15 +73,8 @@ with open("README.md", "r", encoding="utf-8") as fh:
 class BuildMakeLib(Command):
 
     description = "build C/C++ libraries using Makefile"
-
-    #    user_options = [
-    #        ("build-clib=", "b", "directory to build C/C++ libraries to"),
-    #        ("build-temp=", "t", "directory to put temporary build by-products"),
-    #        ("debug", "g", "compile with debugging information"),
-    #        ("force", "f", "forcibly build everything (ignore file timestamps)"),
-    #    ]
-    #
-    #    boolean_options = ["debug", "force"]
+    user_options = []
+    boolean_options = []
 
     def initialize_options(self):
         self.build_clib = None
@@ -187,6 +182,8 @@ if debug_trace_tpp:
 USE_CXX_ABI = int(torch._C._GLIBCXX_USE_CXX11_ABI)
 
 print("extra_compile_args = ", extra_compile_args)
+if enable_smelt:
+    print("SMELT library variant = shared from", smelt_lib)
 
 print(sources)
 
@@ -238,7 +235,8 @@ setup(
             ]
             + ([smelt_include] if enable_smelt else []),
             library_dirs=([smelt_lib] if enable_smelt else []),
-            libraries=(["SMELT", "IR"] if enable_smelt else []),
+            runtime_library_dirs=([smelt_lib] if enable_smelt else []),
+            libraries=(["SMELT"] if enable_smelt else []),
             # library_dirs=[xsmm_lib],
             # libraries=["xsmm"],
         )

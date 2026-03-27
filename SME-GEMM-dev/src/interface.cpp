@@ -38,6 +38,12 @@
 namespace
 {
 
+extern "C" void smelt_save_sme_context(void *dst);
+extern "C" void smelt_restore_sme_context(const void *src);
+
+alignas(16) thread_local std::array<std::uint8_t, 512> sme_saved_context{};
+thread_local int sme_context_depth = 0;
+
 extern "C" __attribute__((naked)) void
 smelt_call_runtime_kernel_entry(void *entry,
                                 std::int64_t batch,
@@ -74,9 +80,32 @@ extern "C" __attribute__((naked)) void smelt_call_runtime_kernel_entry_f32(
                  "br x16\n");
 }
 
-void enter_sme_context() { asm volatile("smstart"); }
+void enter_sme_context()
+{
+    if (sme_context_depth++ > 0)
+    {
+        return;
+    }
 
-void exit_sme_context() { asm volatile("smstop"); }
+    smelt_save_sme_context(sme_saved_context.data());
+    asm volatile("smstart" ::: "memory");
+}
+
+void exit_sme_context()
+{
+    if (sme_context_depth <= 0)
+    {
+        return;
+    }
+
+    if (--sme_context_depth > 0)
+    {
+        return;
+    }
+
+    asm volatile("smstop" ::: "memory");
+    smelt_restore_sme_context(sme_saved_context.data());
+}
 
 struct ExecutableBuffer
 {

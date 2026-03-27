@@ -10,7 +10,9 @@ add_library(IR STATIC
     frontend.cpp
     block2Tile.cpp)
 
-add_library(SMELT STATIC interface.cpp)
+add_library(SMELT SHARED
+    interface.cpp
+    smelt_context.S)
 target_link_libraries(SMELT IR)
 
 # SMELT is linked into the Python extension shared object, so both static
@@ -27,4 +29,4 @@ else()
     set(SMELT_MARCH "${SMELT_BASE_MARCH}")
 endif()
 
-target_compile_options(SMELT PRIVATE "${SMELT_MARCH}")
+target_compile_options(SMELT PRIVATE $<$<COMPILE_LANGUAGE:CXX>:${SMELT_MARCH}>)
