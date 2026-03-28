@@ -10,6 +10,7 @@
 
 
 import math
+import time
 import torch
 from torch import nn
 from torch.autograd import Function
@@ -23,6 +24,7 @@ from tpp_pytorch_extension.utils.xsmm import (
     is_smelt_backend,
     log_brgemm_output_compare,
     log_brgemm_shapes,
+    log_brgemm_timing_compare,
     should_compare_brgemm,
 )
 
@@ -146,6 +148,9 @@ def FusedTriangleMultiplicationOpti_forward(self, act, mask, backend=None):
     mask = mask[..., None]
     with brgemm_backend(backend):
         input_act = act
+        compare_active = should_compare_brgemm() and is_smelt_backend()
+        if compare_active:
+            compare_start = time.perf_counter()
         smelt_act = _run_fused_triangle_multiplication_impl(
             input_act,
             mask,
@@ -163,8 +168,10 @@ def FusedTriangleMultiplicationOpti_forward(self, act, mask, backend=None):
             self.gating_linear.weight,
             self.gating_linear.bias,
         )
+        if compare_active:
+            smelt_elapsed = time.perf_counter() - compare_start
 
-        if should_compare_brgemm() and is_smelt_backend():
+        if compare_active:
             log_brgemm_shapes(
                 "FusedTriangleMultiplication",
                 [
@@ -185,6 +192,7 @@ def FusedTriangleMultiplicationOpti_forward(self, act, mask, backend=None):
                 ],
             )
             with brgemm_backend(BrgemmBackend.LIBXSMM):
+                ref_start = time.perf_counter()
                 ref_act = _run_fused_triangle_multiplication_impl(
                     input_act,
                     mask,
@@ -202,8 +210,12 @@ def FusedTriangleMultiplicationOpti_forward(self, act, mask, backend=None):
                     self.gating_linear.weight,
                     self.gating_linear.bias,
                 )
+                ref_elapsed = time.perf_counter() - ref_start
             log_brgemm_output_compare(
                 "FusedTriangleMultiplication", smelt_act, ref_act
+            )
+            log_brgemm_timing_compare(
+                "FusedTriangleMultiplication", smelt_elapsed, ref_elapsed
             )
     return smelt_act
 

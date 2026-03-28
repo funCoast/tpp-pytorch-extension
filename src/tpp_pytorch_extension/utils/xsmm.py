@@ -9,6 +9,7 @@
 ###############################################################################
 
 import os
+import time
 from contextlib import contextmanager
 from enum import IntEnum
 
@@ -140,6 +141,26 @@ def log_brgemm_output_compare(tag, smelt_output, ref_output):
     abs_diff = (smelt_output[shared_finite] - ref_output[shared_finite]).abs()
     print(f"  - max abs diff: {abs_diff.max().item():.6e}")
     print(f"  - mean abs diff: {abs_diff.mean().item():.6e}")
+
+
+def log_brgemm_timing_compare(tag, smelt_seconds, ref_seconds):
+    smelt_ms = smelt_seconds * 1000.0
+    ref_ms = ref_seconds * 1000.0
+    delta_ms = smelt_ms - ref_ms
+    if ref_ms > 0:
+        pct = (delta_ms / ref_ms) * 100.0
+    else:
+        pct = float("inf") if delta_ms > 0 else 0.0
+    if delta_ms < 0:
+        verdict = "faster"
+    elif delta_ms > 0:
+        verdict = "slower"
+    else:
+        verdict = "same"
+    print(f"[SME-GEMM-dev DEBUG]:{tag} timing compare:")
+    print(f"  - smelt: {smelt_ms:.3f} ms")
+    print(f"  - libxsmm: {ref_ms:.3f} ms")
+    print(f"  - delta: {delta_ms:+.3f} ms ({pct:+.2f}%), smelt is {verdict}")
 
 
 @contextmanager

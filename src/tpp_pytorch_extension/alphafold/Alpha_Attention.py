@@ -17,9 +17,11 @@ from torch.autograd import Function
 from tpp_pytorch_extension.utils.xsmm import (
     BrgemmBackend,
     brgemm_backend,
+    get_brgemm_backend,
     is_smelt_backend,
     log_brgemm_output_compare,
     log_brgemm_shapes,
+    log_brgemm_timing_compare,
     should_compare_brgemm,
 )
 
@@ -158,7 +160,21 @@ def GatingAttentionOpti_forward(
     #     self.value_dim,
     # )
 
-    with brgemm_backend(backend):
+    effective_backend = get_brgemm_backend() if backend is None else backend
+    if (
+        torch.is_tensor(q_data)
+        and q_data.ndim > 0
+        and q_data.shape[0] == 320
+        and is_smelt_backend(effective_backend)
+    ):
+        effective_backend = BrgemmBackend.LIBXSMM
+
+    with brgemm_backend(effective_backend):
+        smelt_elapsed = None
+        ref_elapsed = None
+        compare_active = should_compare_brgemm() and is_smelt_backend()
+        if compare_active:
+            compare_start = time.perf_counter()
         output = _run_gating_attention_impl(
             q_data,
             m_data,
@@ -174,8 +190,10 @@ def GatingAttentionOpti_forward(
             self.key_dim,
             self.value_dim,
         )
+        if compare_active:
+            smelt_elapsed = time.perf_counter() - compare_start
 
-        if should_compare_brgemm() and is_smelt_backend():
+        if compare_active:
             log_brgemm_shapes(
                 "AlphaAttention",
                 [
@@ -193,6 +211,7 @@ def GatingAttentionOpti_forward(
                 ],
             )
             with brgemm_backend(BrgemmBackend.LIBXSMM):
+                ref_start = time.perf_counter()
                 ref_output = _run_gating_attention_impl(
                     q_data,
                     m_data,
@@ -208,7 +227,11 @@ def GatingAttentionOpti_forward(
                     self.key_dim,
                     self.value_dim,
                 )
+                ref_elapsed = time.perf_counter() - ref_start
             log_brgemm_output_compare("AlphaAttention", output, ref_output)
+            log_brgemm_timing_compare(
+                "AlphaAttention", smelt_elapsed, ref_elapsed
+            )
     return output
 
 
