@@ -73,6 +73,16 @@ typedef at::Float8_e5m2 bfloat8;
 typedef at::Float8_e4m3fn hfloat8;
 #endif
 
+inline float upconvert_to_float(float val);
+inline float upconvert_to_float(bfloat16 val);
+inline float upconvert_to_float(half val);
+#ifdef PYTORCH_SUPPORTS_FLOAT8
+inline float upconvert_to_float(bfloat8 val);
+inline float upconvert_to_float(hfloat8 val);
+#endif
+
+inline int xsmm_get_vnni_block_size(libxsmm_datatype dtype);
+
 inline float upconvert_to_float(float val) {
   return val;
 }
