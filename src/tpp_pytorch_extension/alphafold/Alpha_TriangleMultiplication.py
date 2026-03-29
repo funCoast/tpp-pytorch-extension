@@ -22,11 +22,13 @@ from tpp_pytorch_extension.utils.xsmm import (
     BrgemmBackend,
     brgemm_backend,
     get_brgemm_backend,
+    log_brgemm_layouts,
     is_smelt_backend,
     log_brgemm_output_compare,
     log_brgemm_params,
     log_brgemm_timing_compare,
     should_compare_brgemm,
+    should_debug_brgemm,
 )
 
 
@@ -173,6 +175,44 @@ def TriangleMultiplicationOpti_forward(self, act, mask, backend=None):
     mask = mask[..., None]
     effective_backend = get_brgemm_backend() if backend is None else backend
     compare_active = should_compare_brgemm() and is_smelt_backend(effective_backend)
+    debug_active = should_debug_brgemm()
+    if debug_active:
+        backend_name = (
+            effective_backend.name
+            if hasattr(effective_backend, "name")
+            else str(effective_backend)
+        )
+        print(
+            f"[SME-GEMM-dev DEBUG]:TriangleMultiplication debug mode: "
+            f"backend={backend_name}, compare={compare_active}"
+        )
+        log_brgemm_layouts(
+            "TriangleMultiplication",
+            [
+                ("act", act),
+                ("mask", mask),
+                ("layer_norm_input.weight", self.layer_norm_input.weight),
+                ("layer_norm_input.bias", self.layer_norm_input.bias),
+                ("left_projection.weight", self.left_projection.weight),
+                ("left_projection.bias", self.left_projection.bias),
+                ("right_projection.weight", self.right_projection.weight),
+                ("right_projection.bias", self.right_projection.bias),
+                ("left_gate.weight", self.left_gate.weight),
+                ("left_gate.bias", self.left_gate.bias),
+                ("right_gate.weight", self.right_gate.weight),
+                ("right_gate.bias", self.right_gate.bias),
+                ("center_layer_norm.weight", self.center_layer_norm.weight),
+                ("center_layer_norm.bias", self.center_layer_norm.bias),
+                ("output_projection.weight", self.output_projection.weight),
+                ("output_projection.bias", self.output_projection.bias),
+                ("gating_linear.weight", self.gating_linear.weight),
+                ("gating_linear.bias", self.gating_linear.bias),
+            ],
+        )
+        print(
+            "[SME-GEMM-dev DEBUG]:TriangleMultiplication debug mode uses the "
+            "safe scalar fallback for high-risk SMELT batch regions"
+        )
     with brgemm_backend(effective_backend, verbose=not compare_active):
         input_act = act
         if compare_active:

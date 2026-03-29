@@ -18,7 +18,10 @@
 #include <atomic>
 #include <algorithm>
 #include <array>
+#include <cctype>
+#include <cstdlib>
 #include <cstring>
+#include <cstdio>
 #include <libxsmm.h>
 #include <libxsmm_intrinsics_x86.h>
 #ifdef TORCH_API_INCLUDE_EXTENSION_H
@@ -343,6 +346,30 @@ inline const char* brgemm_backend_name(BrgemmBackend backend) {
   return "unknown";
 }
 
+inline bool env_flag_enabled(const char* name) {
+  const char* value = std::getenv(name);
+  if (value == nullptr || *value == '\0') {
+    return false;
+  }
+  std::string normalized(value);
+  std::transform(
+      normalized.begin(),
+      normalized.end(),
+      normalized.begin(),
+      [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
+  return normalized == "1" || normalized == "true" || normalized == "yes" ||
+      normalized == "on";
+}
+
+inline bool brgemm_debug_enabled() {
+#ifdef TPP_WITH_SMELT
+  static const bool enabled = env_flag_enabled("TPP_BRGEMM_DEBUG");
+  return enabled;
+#else
+  return false;
+#endif
+}
+
 template <typename Tin, typename Tw, typename Tout>
 constexpr bool brgemm_smelt_supported() {
 #ifdef TPP_WITH_SMELT
@@ -366,6 +393,57 @@ inline bool brgemm_use_smelt_backend(float beta = 0.0f) {
 
 template <typename T>
 inline void smelt_gemm_batch(
+    const char* tag,
+    char transa,
+    char transb,
+    int m,
+    int n,
+    int k,
+    std::int64_t batch,
+    const T* const* a_array,
+    const T* const* b_array,
+    T* const* c_array);
+
+template <typename T>
+inline void smelt_gemm_batch(
+    char transa,
+    char transb,
+    int m,
+    int n,
+    int k,
+    std::int64_t batch,
+    const T* const* a_array,
+    const T* const* b_array,
+    T* const* c_array) {
+#ifdef TPP_WITH_SMELT
+  smelt_gemm_batch<T>(
+      nullptr,
+      transa,
+      transb,
+      m,
+      n,
+      k,
+      batch,
+      a_array,
+      b_array,
+      c_array);
+#else
+  (void)transa;
+  (void)transb;
+  (void)m;
+  (void)n;
+  (void)k;
+  (void)batch;
+  (void)a_array;
+  (void)b_array;
+  (void)c_array;
+  throw std::runtime_error("SMELT batch helper requires TPP_WITH_SMELT");
+#endif
+}
+
+template <typename T>
+inline void smelt_gemm_batch(
+    const char* tag,
     char transa,
     char transb,
     int m,
@@ -382,14 +460,44 @@ inline void smelt_gemm_batch(
   if (a_array == nullptr || b_array == nullptr || c_array == nullptr) {
     throw std::invalid_argument("batch pointer arrays must be non-null");
   }
+  if (brgemm_debug_enabled()) {
+    const char* label = (tag == nullptr || *tag == '\0') ? "smelt_gemm_batch" : tag;
+    std::fprintf(
+        stderr,
+        "[SME-GEMM-dev DEBUG][%s] batch=%lld M=%d N=%d K=%d transa=%c transb=%c\n",
+        label,
+        static_cast<long long>(batch),
+        m,
+        n,
+        k,
+        transa,
+        transb);
+    std::fprintf(
+        stderr,
+        "  A[0]=%p B[0]=%p C[0]=%p\n",
+        static_cast<const void*>(a_array[0]),
+        static_cast<const void*>(b_array[0]),
+        static_cast<void*>(c_array[0]));
+    if (batch > 1) {
+      std::fprintf(
+          stderr,
+          "  A[last]=%p B[last]=%p C[last]=%p\n",
+          static_cast<const void*>(a_array[batch - 1]),
+          static_cast<const void*>(b_array[batch - 1]),
+          static_cast<void*>(c_array[batch - 1]));
+    }
+    std::fflush(stderr);
+  }
   if constexpr (std::is_same<T, double>::value) {
     SMELT::dgemm_batch(transa, transb, m, n, k, batch, a_array, b_array, c_array);
   } else if constexpr (std::is_same<T, float>::value) {
     SMELT::sgemm_batch(transa, transb, m, n, k, batch, a_array, b_array, c_array);
   } else {
     throw std::invalid_argument("SMELT batch helper only supports float/double");
-  }
+    }
+}
 #else
+  (void)tag;
   (void)transa;
   (void)transb;
   (void)m;

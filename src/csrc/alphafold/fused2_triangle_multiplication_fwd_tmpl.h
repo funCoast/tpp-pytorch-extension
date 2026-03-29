@@ -205,7 +205,7 @@ auto sigmoid_tpp = SCOPEIT(
 
     RECORD_FUNCTION("parallel_for", std::vector<c10::IValue>());
 // for (int i = 0; i < B_t; i++) {
-    if (brgemm_use_smelt_backend<T, T, T>(0.0f)) {
+      if (brgemm_use_smelt_backend<T, T, T>(0.0f) && !brgemm_debug_enabled()) {
 #pragma omp parallel for collapse(2)
       for (int i = 0; i < B_t; i += TRI_BLOCKSIZE) {
         for (int j = 0; j < S_t; j += TRI_BLOCKSIZE) {
@@ -227,6 +227,7 @@ auto sigmoid_tpp = SCOPEIT(
             c_ptrs[ib] = &left_proj_gemm[ib][0];
           }
           smelt_gemm_batch(
+              "fused_triangle_proj_left",
               'N',
               'N',
               TRI_BLOCKSIZE,
@@ -250,6 +251,7 @@ auto sigmoid_tpp = SCOPEIT(
             c_ptrs[ib] = &left_gate_gemm[ib][0];
           }
           smelt_gemm_batch(
+              "fused_triangle_gate_left",
               'N',
               'N',
               TRI_BLOCKSIZE,
@@ -297,6 +299,7 @@ auto sigmoid_tpp = SCOPEIT(
             c_ptrs[ib] = &right_proj_gemm[ib][0];
           }
           smelt_gemm_batch(
+              "fused_triangle_proj_right",
               'N',
               'N',
               TRI_BLOCKSIZE,
@@ -320,6 +323,7 @@ auto sigmoid_tpp = SCOPEIT(
             c_ptrs[ib] = &right_gate_gemm[ib][0];
           }
           smelt_gemm_batch(
+              "fused_triangle_gate_right",
               'N',
               'N',
               TRI_BLOCKSIZE,
@@ -561,7 +565,7 @@ act_a = GetVLAPtr<T>(act, {S_t, act_dim});
         &output_projection_weight_a[0][0], &output_trans_proj_weight_a[0][0]);
 
     RECORD_FUNCTION("parallel_for", std::vector<c10::IValue>());
-    if (brgemm_use_smelt_backend<T, T, T>(0.0f)) {
+    if (brgemm_use_smelt_backend<T, T, T>(0.0f) && !brgemm_debug_enabled()) {
 #pragma omp parallel for
       for (int i = 0; i < B_t; i++) {
         const int num_j_blocks = S_t / TRI_BLOCKSIZE;
@@ -589,6 +593,7 @@ act_a = GetVLAPtr<T>(act, {S_t, act_dim});
         }
 
         smelt_gemm_batch(
+            "fused_triangle_outgate",
             'N',
             'N',
             TRI_BLOCKSIZE,
@@ -640,7 +645,7 @@ act_a = GetVLAPtr<T>(act, {S_t, act_dim});
         &gating_linear_weight_a[0][0], &gating_linear_trans_weight_a[0][0]);
 
     RECORD_FUNCTION("parallel_for", std::vector<c10::IValue>());
-    if (brgemm_use_smelt_backend<T, T, T>(0.0f)) {
+    if (brgemm_use_smelt_backend<T, T, T>(0.0f) && !brgemm_debug_enabled()) {
 #pragma omp parallel for
       for (int i = 0; i < B_t; i++) {
         const int num_j_blocks = S_t / TRI_BLOCKSIZE;
@@ -661,6 +666,7 @@ act_a = GetVLAPtr<T>(act, {S_t, act_dim});
         }
 
         smelt_gemm_batch(
+            "fused_triangle_gate",
             'N',
             'N',
             TRI_BLOCKSIZE,

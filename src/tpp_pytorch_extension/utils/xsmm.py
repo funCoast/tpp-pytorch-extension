@@ -24,6 +24,7 @@ class BrgemmBackend(IntEnum):
 
 _BRGEMM_BACKEND_ENV = "TPP_BRGEMM_BACKEND"
 _BRGEMM_COMPARE_ENV = "TPP_BRGEMM_COMPARE"
+_BRGEMM_DEBUG_ENV = "TPP_BRGEMM_DEBUG"
 
 
 def _normalize_backend(backend):
@@ -93,6 +94,10 @@ def should_compare_brgemm():
     return _env_truthy(_BRGEMM_COMPARE_ENV)
 
 
+def should_debug_brgemm():
+    return _env_truthy(_BRGEMM_DEBUG_ENV)
+
+
 def describe_tensor(tensor):
     if tensor is None:
         return "None"
@@ -101,10 +106,28 @@ def describe_tensor(tensor):
     return f"shape={tuple(tensor.shape)}, dtype={tensor.dtype}, device={tensor.device}"
 
 
+def describe_tensor_layout(tensor):
+    if tensor is None:
+        return "None"
+    if not torch.is_tensor(tensor):
+        return f"{type(tensor).__name__}({tensor!r})"
+    return (
+        f"shape={tuple(tensor.shape)}, stride={tuple(tensor.stride())}, "
+        f"contiguous={tensor.is_contiguous()}, storage_offset={tensor.storage_offset()}, "
+        f"dtype={tensor.dtype}, device={tensor.device}"
+    )
+
+
 def log_brgemm_shapes(tag, named_tensors):
     print(f"[SME-GEMM-dev DEBUG]:{tag} shapes:")
     for name, tensor in named_tensors:
         print(f"  - {name}: {describe_tensor(tensor)}")
+
+
+def log_brgemm_layouts(tag, named_tensors):
+    print(f"[SME-GEMM-dev DEBUG]:{tag} tensor layouts:")
+    for name, tensor in named_tensors:
+        print(f"  - {name}: {describe_tensor_layout(tensor)}")
 
 
 def log_brgemm_params(tag, params):

@@ -107,7 +107,7 @@ float alpha = (1.0 / sqrt(key_dim));
   RECORD_SCOPE(alpha_q_gemm, {q, q_data, query_w});
   {
     RECORD_FUNCTION("parallel_for", std::vector<c10::IValue>());
-    if (brgemm_use_smelt_backend<T, T, T>(0.0f)) {
+    if (brgemm_use_smelt_backend<T, T, T>(0.0f) && !brgemm_debug_enabled()) {
       const int qkv_blocks = S_t / QKV_BLOCKSIZE;
       const std::size_t qkv_out_elems =
           static_cast<std::size_t>(QKV_BLOCKSIZE) *
@@ -125,6 +125,7 @@ float alpha = (1.0 / sqrt(key_dim));
           c_ptrs[blk] = q_tmp.data() + static_cast<std::size_t>(blk) * qkv_out_elems;
         }
         smelt_gemm_batch(
+            "alpha_q_gemm",
             'N',
             'N',
             QKV_BLOCKSIZE,
@@ -159,7 +160,7 @@ float alpha = (1.0 / sqrt(key_dim));
   RECORD_SCOPE(alpha_k_gemm, {k, m_data, key_w});
   {
     RECORD_FUNCTION("parallel_for", std::vector<c10::IValue>());
-    if (brgemm_use_smelt_backend<T, T, T>(0.0f)) {
+    if (brgemm_use_smelt_backend<T, T, T>(0.0f) && !brgemm_debug_enabled()) {
       const int qkv_blocks = S_t / QKV_BLOCKSIZE;
       const std::size_t qkv_out_elems =
           static_cast<std::size_t>(QKV_BLOCKSIZE) *
@@ -177,6 +178,7 @@ float alpha = (1.0 / sqrt(key_dim));
           c_ptrs[blk] = k_tmp.data() + static_cast<std::size_t>(blk) * qkv_out_elems;
         }
         smelt_gemm_batch(
+            "alpha_k_gemm",
             'N',
             'N',
             QKV_BLOCKSIZE,
@@ -210,7 +212,7 @@ float alpha = (1.0 / sqrt(key_dim));
   RECORD_SCOPE(alpha_v_gemm, {v, m_data, value_w});
   {
     RECORD_FUNCTION("parallel_for", std::vector<c10::IValue>());
-    if (brgemm_use_smelt_backend<T, T, T>(0.0f)) {
+    if (brgemm_use_smelt_backend<T, T, T>(0.0f) && !brgemm_debug_enabled()) {
       const int qkv_blocks = S_t / QKV_BLOCKSIZE;
 #pragma omp parallel for
       for (int i = 0; i < B_t; i++) {
@@ -223,6 +225,7 @@ float alpha = (1.0 / sqrt(key_dim));
           c_ptrs[blk] = &v_a[i][j][0][0];
         }
         smelt_gemm_batch(
+            "alpha_v_gemm",
             'N',
             'N',
             QKV_BLOCKSIZE,
@@ -338,7 +341,7 @@ auto a_softmax_tpp =
           // csum[A_BLOCKSIZE];
 
           a_cpy_tpp(&q_a[i][j1][n][0], &tmp_qv[0]);
-          if (brgemm_use_smelt_backend<T, T, T>(0.0f)) {
+          if (brgemm_use_smelt_backend<T, T, T>(0.0f) && !brgemm_debug_enabled()) {
             const int logits_blocks = S_t / A_BLOCKSIZE;
             std::vector<const T*> a_ptrs(logits_blocks, &tmp_qv[0]);
             std::vector<const T*> b_ptrs(logits_blocks);
@@ -349,6 +352,7 @@ auto a_softmax_tpp =
               c_ptrs[blk] = &tmp_logits[0][j2];
             }
             smelt_gemm_batch(
+                "alpha_ac_gemm",
                 'N',
                 'N',
                 A_BLOCKSIZE,

@@ -22,11 +22,13 @@ from tpp_pytorch_extension.utils.xsmm import (
     BrgemmBackend,
     brgemm_backend,
     get_brgemm_backend,
+    log_brgemm_layouts,
     is_smelt_backend,
     log_brgemm_output_compare,
     log_brgemm_params,
     log_brgemm_timing_compare,
     should_compare_brgemm,
+    should_debug_brgemm,
 )
 
 
@@ -149,6 +151,40 @@ def FusedTriangleMultiplicationOpti_forward(self, act, mask, backend=None):
     mask = mask[..., None]
     effective_backend = get_brgemm_backend() if backend is None else backend
     compare_active = should_compare_brgemm() and is_smelt_backend(effective_backend)
+    debug_active = should_debug_brgemm()
+    if debug_active:
+        backend_name = (
+            effective_backend.name
+            if hasattr(effective_backend, "name")
+            else str(effective_backend)
+        )
+        print(
+            f"[SME-GEMM-dev DEBUG]:FusedTriangleMultiplication debug mode: "
+            f"backend={backend_name}, compare={compare_active}"
+        )
+        log_brgemm_layouts(
+            "FusedTriangleMultiplication",
+            [
+                ("act", act),
+                ("mask", mask),
+                ("left_norm_input.weight", self.left_norm_input.weight),
+                ("left_norm_input.bias", self.left_norm_input.bias),
+                ("projection.weight", self.projection.weight),
+                ("projection.bias", self.projection.bias),
+                ("gate.weight", self.gate.weight),
+                ("gate.bias", self.gate.bias),
+                ("center_norm.weight", self.center_norm.weight),
+                ("center_norm.bias", self.center_norm.bias),
+                ("output_projection.weight", self.output_projection.weight),
+                ("output_projection.bias", self.output_projection.bias),
+                ("gating_linear.weight", self.gating_linear.weight),
+                ("gating_linear.bias", self.gating_linear.bias),
+            ],
+        )
+        print(
+            "[SME-GEMM-dev DEBUG]:FusedTriangleMultiplication debug mode uses "
+            "the safe scalar fallback for high-risk SMELT batch regions"
+        )
     with brgemm_backend(effective_backend, verbose=not compare_active):
         input_act = act
         if compare_active:

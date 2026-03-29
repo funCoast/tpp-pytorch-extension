@@ -18,11 +18,13 @@ from tpp_pytorch_extension.utils.xsmm import (
     BrgemmBackend,
     brgemm_backend,
     get_brgemm_backend,
+    log_brgemm_layouts,
     is_smelt_backend,
     log_brgemm_output_compare,
     log_brgemm_params,
     log_brgemm_timing_compare,
     should_compare_brgemm,
+    should_debug_brgemm,
 )
 
 # from tpp_pytorch_extension.utils.blocked_layout import (
@@ -170,6 +172,37 @@ def GatingAttentionOpti_forward(
         effective_backend = BrgemmBackend.LIBXSMM
 
     compare_active = should_compare_brgemm() and is_smelt_backend(effective_backend)
+    debug_active = should_debug_brgemm()
+    if debug_active:
+        backend_name = (
+            effective_backend.name
+            if hasattr(effective_backend, "name")
+            else str(effective_backend)
+        )
+        print(
+            f"[SME-GEMM-dev DEBUG]:AlphaAttention debug mode: "
+            f"backend={backend_name}, compare={compare_active}"
+        )
+        log_brgemm_layouts(
+            "AlphaAttention",
+            [
+                ("q_data", q_data),
+                ("m_data", m_data),
+                ("bias", bias),
+                ("nonbatched_bias", nonbatched_bias),
+                ("query_w", self.query_w),
+                ("key_w", self.key_w),
+                ("value_w", self.value_w),
+                ("gating_w", self.gating_w),
+                ("gating_b", self.gating_b),
+                ("output_w", self.output_w),
+                ("output_b", self.output_b),
+            ],
+        )
+        print(
+            "[SME-GEMM-dev DEBUG]:AlphaAttention debug mode uses the safe scalar "
+            "fallback for high-risk SMELT batch regions"
+        )
     with brgemm_backend(effective_backend, verbose=not compare_active):
         smelt_elapsed = None
         ref_elapsed = None
