@@ -200,10 +200,30 @@ def GatingAttentionOpti_forward(
             ],
         )
         print(
-            "[SME-GEMM-dev DEBUG]:AlphaAttention debug mode uses the safe scalar "
-            "fallback for high-risk SMELT batch regions"
+            "[SME-GEMM-dev DEBUG]:AlphaAttention debug mode keeps the SMELT "
+            "batch path enabled for supported kernels"
         )
-    with brgemm_backend(effective_backend, verbose=not compare_active):
+        batch = int(q_data.shape[0])
+        seq = int(q_data.shape[1])
+        qkv_hidden = int(q_data.shape[2])
+        num_head = int(self.num_head)
+        head_dim = int(self.key_dim)
+        value_dim = int(self.value_dim)
+        qkv_blocksize = 64
+        a_blocksize = 64
+        c_blocksize = 64
+        seq_pad = ((seq + qkv_blocksize - 1) // qkv_blocksize) * qkv_blocksize
+        head_prod = num_head * head_dim
+        print(
+            "[SME-GEMM-dev DEBUG]:AlphaAttention batch layout: "
+            f"B={batch}, S={seq}, S_pad={seq_pad}, HS={qkv_hidden}, "
+            f"H={head_dim}, num_head={num_head}, value_dim={value_dim}, "
+            f"qkv_blocksize={qkv_blocksize}, a_blocksize={a_blocksize}, "
+            f"c_blocksize={c_blocksize}, smelt_batch=enabled"
+        )
+    with brgemm_backend(
+        effective_backend, verbose=not compare_active and not debug_active
+    ):
         smelt_elapsed = None
         ref_elapsed = None
         if compare_active:
@@ -227,17 +247,6 @@ def GatingAttentionOpti_forward(
             smelt_elapsed = time.perf_counter() - compare_start
 
         if compare_active:
-            batch = int(q_data.shape[0])
-            seq = int(q_data.shape[1])
-            qkv_hidden = int(q_data.shape[2])
-            num_head = int(self.num_head)
-            head_dim = int(self.key_dim)
-            value_dim = int(self.value_dim)
-            qkv_blocksize = 64
-            a_blocksize = 64
-            c_blocksize = 64
-            seq_pad = ((seq + qkv_blocksize - 1) // qkv_blocksize) * qkv_blocksize
-            head_prod = num_head * head_dim
             log_brgemm_params(
                 "AlphaAttention",
                 [

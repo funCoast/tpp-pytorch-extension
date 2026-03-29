@@ -182,10 +182,25 @@ def FusedTriangleMultiplicationOpti_forward(self, act, mask, backend=None):
             ],
         )
         print(
-            "[SME-GEMM-dev DEBUG]:FusedTriangleMultiplication debug mode uses "
-            "the safe scalar fallback for high-risk SMELT batch regions"
+            "[SME-GEMM-dev DEBUG]:FusedTriangleMultiplication debug mode keeps "
+            "the SMELT batch path enabled for supported kernels"
         )
-    with brgemm_backend(effective_backend, verbose=not compare_active):
+        act_dim = int(self.left_norm_input.normalized_shape[0])
+        num_intermediate_channel = int(self.projection.out_features // 2)
+        tri_blocksize = 32
+        b = int(act.shape[0])
+        s = int(act.shape[1])
+        b_pad = ((b + tri_blocksize - 1) // tri_blocksize) * tri_blocksize
+        s_pad = ((s + tri_blocksize - 1) // tri_blocksize) * tri_blocksize
+        print(
+            "[SME-GEMM-dev DEBUG]:FusedTriangleMultiplication batch layout: "
+            f"B={b}, S={s}, B_pad={b_pad}, S_pad={s_pad}, act_dim={act_dim}, "
+            f"num_intermediate_channel={num_intermediate_channel}, "
+            f"tri_blocksize={tri_blocksize}, smelt_batch=enabled"
+        )
+    with brgemm_backend(
+        effective_backend, verbose=not compare_active and not debug_active
+    ):
         input_act = act
         if compare_active:
             compare_start = time.perf_counter()

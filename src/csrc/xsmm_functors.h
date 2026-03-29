@@ -33,6 +33,7 @@
 #include <string>
 #include <stdexcept>
 #include <type_traits>
+#include <mutex>
 #include <unordered_map>
 #include <vector>
 #ifdef _OPENMP
@@ -507,6 +508,8 @@ inline void smelt_gemm_batch(
     }
     std::fflush(stderr);
   }
+  static std::mutex smelt_batch_mutex;
+  std::lock_guard<std::mutex> lock(smelt_batch_mutex);
   if constexpr (std::is_same<T, double>::value) {
     SMELT::dgemm_batch(transa, transb, m, n, k, batch, a_array, b_array, c_array);
   } else if constexpr (std::is_same<T, float>::value) {
@@ -2633,6 +2636,7 @@ class BrgemmTPP {
       std::vector<const SmeltT*> b_ptrs(static_cast<std::size_t>(count));
       std::vector<SmeltT*> c_ptrs(static_cast<std::size_t>(count));
 
+      std::fill(c_accum.begin(), c_accum.end(), SmeltT{0});
       if (beta != 0.0f) {
         for (int i = 0; i < M; ++i) {
           for (int j = 0; j < N; ++j) {
