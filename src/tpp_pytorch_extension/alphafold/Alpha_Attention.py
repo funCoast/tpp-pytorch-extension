@@ -20,7 +20,7 @@ from tpp_pytorch_extension.utils.xsmm import (
     get_brgemm_backend,
     is_smelt_backend,
     log_brgemm_output_compare,
-    log_brgemm_shapes,
+    log_brgemm_params,
     log_brgemm_timing_compare,
     should_compare_brgemm,
 )
@@ -169,10 +169,10 @@ def GatingAttentionOpti_forward(
     ):
         effective_backend = BrgemmBackend.LIBXSMM
 
-    with brgemm_backend(effective_backend):
+    compare_active = should_compare_brgemm() and is_smelt_backend(effective_backend)
+    with brgemm_backend(effective_backend, verbose=not compare_active):
         smelt_elapsed = None
         ref_elapsed = None
-        compare_active = should_compare_brgemm() and is_smelt_backend()
         if compare_active:
             compare_start = time.perf_counter()
         output = _run_gating_attention_impl(
@@ -194,23 +194,126 @@ def GatingAttentionOpti_forward(
             smelt_elapsed = time.perf_counter() - compare_start
 
         if compare_active:
-            log_brgemm_shapes(
+            batch = int(q_data.shape[0])
+            seq = int(q_data.shape[1])
+            qkv_hidden = int(q_data.shape[2])
+            num_head = int(self.num_head)
+            head_dim = int(self.key_dim)
+            value_dim = int(self.value_dim)
+            qkv_blocksize = 64
+            a_blocksize = 64
+            c_blocksize = 64
+            seq_pad = ((seq + qkv_blocksize - 1) // qkv_blocksize) * qkv_blocksize
+            head_prod = num_head * head_dim
+            log_brgemm_params(
                 "AlphaAttention",
                 [
-                    ("q_data", q_data),
-                    ("m_data", m_data),
-                    ("bias", bias),
-                    ("nonbatched_bias", nonbatched_bias),
-                    ("query_w", self.query_w),
-                    ("key_w", self.key_w),
-                    ("value_w", self.value_w),
-                    ("gating_w", self.gating_w),
-                    ("gating_b", self.gating_b),
-                    ("output_w", self.output_w),
-                    ("output_b", self.output_b),
+                    (
+                        "qkv_brgemm",
+                        {
+                            "M": qkv_blocksize,
+                            "N": head_prod,
+                            "K": qkv_hidden,
+                            "lda": qkv_hidden,
+                            "ldb": head_prod,
+                            "ldc": head_prod,
+                            "count": 1,
+                            "beta": 0.0,
+                            "a_trans": 0,
+                            "b_vnni": 1,
+                            "transa": "N",
+                            "transb": "N",
+                        },
+                    ),
+                    (
+                        "a_brgemm",
+                        {
+                            "M": a_blocksize,
+                            "N": a_blocksize,
+                            "K": head_dim,
+                            "lda": head_dim,
+                            "ldb": seq_pad,
+                            "ldc": seq_pad,
+                            "count": 1,
+                            "beta": 0.0,
+                            "a_trans": 0,
+                            "b_vnni": 1,
+                            "transa": "N",
+                            "transb": "N",
+                        },
+                    ),
+                    (
+                        "a_brgemm2",
+                        {
+                            "M": a_blocksize,
+                            "N": head_dim,
+                            "K": a_blocksize,
+                            "str_a": a_blocksize,
+                            "str_b": a_blocksize * head_prod,
+                            "lda": a_blocksize,
+                            "ldb": seq_pad,
+                            "ldc": head_dim,
+                            "count": 1,
+                            "beta": 1.0,
+                            "a_trans": 0,
+                            "b_vnni": 1,
+                            "transa": "N",
+                            "transb": "N",
+                        },
+                    ),
+                    (
+                        "c_brgemm",
+                        {
+                            "M": c_blocksize,
+                            "N": head_prod,
+                            "K": qkv_hidden,
+                            "lda": qkv_hidden,
+                            "ldb": head_prod,
+                            "ldc": head_prod,
+                            "count": 1,
+                            "beta": 0.0,
+                            "a_trans": 0,
+                            "b_vnni": 1,
+                            "transa": "N",
+                            "transb": "N",
+                        },
+                    ),
+                    (
+                        "out_gemm",
+                        {
+                            "M": c_blocksize,
+                            "N": qkv_hidden,
+                            "K": head_prod,
+                            "lda": qkv_hidden,
+                            "ldb": head_prod,
+                            "ldc": head_prod,
+                            "count": 1,
+                            "beta": 0.0,
+                            "a_trans": 0,
+                            "b_vnni": 1,
+                            "transa": "N",
+                            "transb": "N",
+                        },
+                    ),
+                    (
+                        "module_layout",
+                        {
+                            "B": batch,
+                            "S": seq,
+                            "S_pad": seq_pad,
+                            "HS": qkv_hidden,
+                            "H": head_dim,
+                            "num_head": num_head,
+                            "value_dim": value_dim,
+                            "qkv_blocksize": qkv_blocksize,
+                            "a_blocksize": a_blocksize,
+                            "c_blocksize": c_blocksize,
+                        },
+                    ),
                 ],
             )
-            with brgemm_backend(BrgemmBackend.LIBXSMM):
+            print("[SME-GEMM-dev DEBUG]:AlphaAttention compare basis: smelt vs libxsmm (baseline is libxsmm)")
+            with brgemm_backend(BrgemmBackend.LIBXSMM, verbose=False):
                 ref_start = time.perf_counter()
                 ref_output = _run_gating_attention_impl(
                     q_data,

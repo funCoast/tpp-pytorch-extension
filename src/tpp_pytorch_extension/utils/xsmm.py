@@ -75,11 +75,12 @@ def get_brgemm_backend():
     return BrgemmBackend(xsmm_cpp.get_brgemm_backend())
 
 
-def set_brgemm_backend(backend):
+def set_brgemm_backend(backend, verbose=True):
     backend = _normalize_backend(backend)
     xsmm_cpp.set_brgemm_backend(int(backend))
     xsmm_cpp.set_smelt_auto_context_switch(backend == BrgemmBackend.SMELT)
-    _debug_print_backend(backend)
+    if verbose:
+        _debug_print_backend(backend)
 
 
 def is_smelt_backend(backend=None):
@@ -104,6 +105,38 @@ def log_brgemm_shapes(tag, named_tensors):
     print(f"[SME-GEMM-dev DEBUG]:{tag} shapes:")
     for name, tensor in named_tensors:
         print(f"  - {name}: {describe_tensor(tensor)}")
+
+
+def log_brgemm_params(tag, params):
+    print(f"[SME-GEMM-dev DEBUG]:{tag} GEMM params:")
+    for name, fields in params:
+        if fields is None:
+            print(f"  - {name}: None")
+            continue
+        ordered_keys = [
+            "M",
+            "N",
+            "K",
+            "lda",
+            "ldb",
+            "ldc",
+            "str_a",
+            "str_b",
+            "count",
+            "beta",
+            "a_trans",
+            "b_vnni",
+            "transa",
+            "transb",
+        ]
+        parts = []
+        for key in ordered_keys:
+            if key in fields:
+                parts.append(f"{key}={fields[key]}")
+        for key, value in fields.items():
+            if key not in ordered_keys:
+                parts.append(f"{key}={value}")
+        print(f"  - {name}: {', '.join(parts)}")
 
 
 def log_brgemm_output_compare(tag, smelt_output, ref_output):
@@ -164,16 +197,16 @@ def log_brgemm_timing_compare(tag, smelt_seconds, ref_seconds):
 
 
 @contextmanager
-def brgemm_backend(backend):
+def brgemm_backend(backend, verbose=True):
     if backend is None:
         yield get_brgemm_backend()
         return
     previous = get_brgemm_backend()
-    set_brgemm_backend(backend)
+    set_brgemm_backend(backend, verbose=verbose)
     try:
         yield get_brgemm_backend()
     finally:
-        set_brgemm_backend(previous)
+        set_brgemm_backend(previous, verbose=verbose)
 
 
 def _apply_brgemm_backend_from_env():

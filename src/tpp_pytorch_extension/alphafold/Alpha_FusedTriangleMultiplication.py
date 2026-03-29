@@ -21,9 +21,10 @@ from tpp_pytorch_extension._C import (
 from tpp_pytorch_extension.utils.xsmm import (
     BrgemmBackend,
     brgemm_backend,
+    get_brgemm_backend,
     is_smelt_backend,
     log_brgemm_output_compare,
-    log_brgemm_shapes,
+    log_brgemm_params,
     log_brgemm_timing_compare,
     should_compare_brgemm,
 )
@@ -146,9 +147,10 @@ def _run_fused_triangle_multiplication_impl(
 
 def FusedTriangleMultiplicationOpti_forward(self, act, mask, backend=None):
     mask = mask[..., None]
-    with brgemm_backend(backend):
+    effective_backend = get_brgemm_backend() if backend is None else backend
+    compare_active = should_compare_brgemm() and is_smelt_backend(effective_backend)
+    with brgemm_backend(effective_backend, verbose=not compare_active):
         input_act = act
-        compare_active = should_compare_brgemm() and is_smelt_backend()
         if compare_active:
             compare_start = time.perf_counter()
         smelt_act = _run_fused_triangle_multiplication_impl(
@@ -172,26 +174,104 @@ def FusedTriangleMultiplicationOpti_forward(self, act, mask, backend=None):
             smelt_elapsed = time.perf_counter() - compare_start
 
         if compare_active:
-            log_brgemm_shapes(
+            act_dim = int(self.left_norm_input.normalized_shape[0])
+            num_intermediate_channel = int(self.projection.out_features // 2)
+            tri_blocksize = 32
+            b = int(input_act.shape[0])
+            s = int(input_act.shape[1])
+            b_pad = ((b + tri_blocksize - 1) // tri_blocksize) * tri_blocksize
+            s_pad = ((s + tri_blocksize - 1) // tri_blocksize) * tri_blocksize
+            log_brgemm_params(
                 "FusedTriangleMultiplication",
                 [
-                    ("act", input_act),
-                    ("mask", mask),
-                    ("left_norm_input.weight", self.left_norm_input.weight),
-                    ("left_norm_input.bias", self.left_norm_input.bias),
-                    ("projection.weight", self.projection.weight),
-                    ("projection.bias", self.projection.bias),
-                    ("gate.weight", self.gate.weight),
-                    ("gate.bias", self.gate.bias),
-                    ("center_norm.weight", self.center_norm.weight),
-                    ("center_norm.bias", self.center_norm.bias),
-                    ("output_projection.weight", self.output_projection.weight),
-                    ("output_projection.bias", self.output_projection.bias),
-                    ("gating_linear.weight", self.gating_linear.weight),
-                    ("gating_linear.bias", self.gating_linear.bias),
+                    (
+                        "proj_brgemm",
+                        {
+                            "M": tri_blocksize,
+                            "N": 2 * num_intermediate_channel,
+                            "K": act_dim,
+                            "lda": act_dim,
+                            "ldb": 2 * num_intermediate_channel,
+                            "ldc": 2 * num_intermediate_channel,
+                            "count": 1,
+                            "beta": 0.0,
+                            "a_trans": 0,
+                            "b_vnni": 1,
+                            "transa": "N",
+                            "transb": "N",
+                        },
+                    ),
+                    (
+                        "equation_brgemm_outgoing",
+                        {
+                            "M": tri_blocksize,
+                            "N": tri_blocksize,
+                            "K": tri_blocksize,
+                            "str_a": tri_blocksize * tri_blocksize,
+                            "str_b": tri_blocksize * tri_blocksize,
+                            "lda": tri_blocksize,
+                            "ldb": tri_blocksize,
+                            "ldc": tri_blocksize,
+                            "count": s_pad // tri_blocksize,
+                            "beta": 0.0,
+                            "a_trans": 0,
+                            "b_vnni": 1,
+                            "transa": "N",
+                            "transb": "N",
+                        },
+                    ),
+                    (
+                        "equation_brgemm_incoming",
+                        {
+                            "M": tri_blocksize,
+                            "N": tri_blocksize,
+                            "K": tri_blocksize,
+                            "str_a": tri_blocksize * tri_blocksize,
+                            "str_b": tri_blocksize * tri_blocksize,
+                            "lda": tri_blocksize,
+                            "ldb": tri_blocksize,
+                            "ldc": tri_blocksize,
+                            "count": b_pad // tri_blocksize,
+                            "beta": 0.0,
+                            "a_trans": 1,
+                            "b_vnni": 1,
+                            "transa": "T",
+                            "transb": "N",
+                        },
+                    ),
+                    (
+                        "outgate_brgemm",
+                        {
+                            "M": tri_blocksize,
+                            "N": act_dim,
+                            "K": act_dim,
+                            "lda": act_dim,
+                            "ldb": act_dim,
+                            "ldc": act_dim,
+                            "count": 1,
+                            "beta": 0.0,
+                            "a_trans": 0,
+                            "b_vnni": 1,
+                            "transa": "N",
+                            "transb": "N",
+                        },
+                    ),
+                    (
+                        "module_layout",
+                        {
+                            "B": b,
+                            "S": s,
+                            "B_pad": b_pad,
+                            "S_pad": s_pad,
+                            "act_dim": act_dim,
+                            "num_intermediate_channel": num_intermediate_channel,
+                            "tri_blocksize": tri_blocksize,
+                        },
+                    ),
                 ],
             )
-            with brgemm_backend(BrgemmBackend.LIBXSMM):
+            print("[SME-GEMM-dev DEBUG]:FusedTriangleMultiplication compare basis: smelt vs libxsmm (baseline is libxsmm)")
+            with brgemm_backend(BrgemmBackend.LIBXSMM, verbose=False):
                 ref_start = time.perf_counter()
                 ref_act = _run_fused_triangle_multiplication_impl(
                     input_act,
