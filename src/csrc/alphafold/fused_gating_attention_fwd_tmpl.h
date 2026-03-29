@@ -107,12 +107,46 @@ float alpha = (1.0 / sqrt(key_dim));
   RECORD_SCOPE(alpha_q_gemm, {q, q_data, query_w});
   {
     RECORD_FUNCTION("parallel_for", std::vector<c10::IValue>());
+    if (brgemm_use_smelt_backend<T, T, T>(0.0f)) {
+      const int qkv_blocks = S_t / QKV_BLOCKSIZE;
+      const std::size_t qkv_out_elems =
+          static_cast<std::size_t>(QKV_BLOCKSIZE) *
+          static_cast<std::size_t>(N_t * H_t);
+#pragma omp parallel for
+      for (int i = 0; i < B_t; i++) {
+        std::vector<T> q_tmp(
+            static_cast<std::size_t>(qkv_blocks) * qkv_out_elems);
+        std::vector<const T*> a_ptrs(qkv_blocks);
+        std::vector<const T*> b_ptrs(qkv_blocks, &query_w_a[0][0][0]);
+        std::vector<T*> c_ptrs(qkv_blocks);
+        for (int blk = 0; blk < qkv_blocks; ++blk) {
+          int j = blk * QKV_BLOCKSIZE;
+          a_ptrs[blk] = &q_data_a[i][j][0];
+          c_ptrs[blk] = q_tmp.data() + static_cast<std::size_t>(blk) * qkv_out_elems;
+        }
+        smelt_gemm_batch(
+            'N',
+            'N',
+            QKV_BLOCKSIZE,
+            N_t * H_t,
+            HS_t,
+            qkv_blocks,
+            a_ptrs.data(),
+            b_ptrs.data(),
+            c_ptrs.data());
+        for (int blk = 0; blk < qkv_blocks; ++blk) {
+          int j = blk * QKV_BLOCKSIZE;
+          scale_tpp(c_ptrs[blk], &q_a[i][j][0][0], alpha);
+        }
+      }
+    } else {
 #pragma omp parallel for collapse(2)
-    for (int i = 0; i < B_t; i++) {
-      for (int j = 0; j < S_t; j += QKV_BLOCKSIZE) {
-        T tmp[QKV_BLOCKSIZE * N_t * H_t];
-        qkv_brgemm_tpp(&q_data_a[i][j][0], &query_w_a[0][0][0], &tmp[0], 1);
-        scale_tpp(&tmp[0], &q_a[i][j][0][0], alpha);
+      for (int i = 0; i < B_t; i++) {
+        for (int j = 0; j < S_t; j += QKV_BLOCKSIZE) {
+          T tmp[QKV_BLOCKSIZE * N_t * H_t];
+          qkv_brgemm_tpp(&q_data_a[i][j][0], &query_w_a[0][0][0], &tmp[0], 1);
+          scale_tpp(&tmp[0], &q_a[i][j][0][0], alpha);
+        }
       }
     }
   }
@@ -125,12 +159,46 @@ float alpha = (1.0 / sqrt(key_dim));
   RECORD_SCOPE(alpha_k_gemm, {k, m_data, key_w});
   {
     RECORD_FUNCTION("parallel_for", std::vector<c10::IValue>());
+    if (brgemm_use_smelt_backend<T, T, T>(0.0f)) {
+      const int qkv_blocks = S_t / QKV_BLOCKSIZE;
+      const std::size_t qkv_out_elems =
+          static_cast<std::size_t>(QKV_BLOCKSIZE) *
+          static_cast<std::size_t>(N_t * H_t);
+#pragma omp parallel for
+      for (int i = 0; i < B_t; i++) {
+        std::vector<T> k_tmp(
+            static_cast<std::size_t>(qkv_blocks) * qkv_out_elems);
+        std::vector<const T*> a_ptrs(qkv_blocks);
+        std::vector<const T*> b_ptrs(qkv_blocks, &key_w_a[0][0][0]);
+        std::vector<T*> c_ptrs(qkv_blocks);
+        for (int blk = 0; blk < qkv_blocks; ++blk) {
+          int j = blk * QKV_BLOCKSIZE;
+          a_ptrs[blk] = &m_data_a[i][j][0];
+          c_ptrs[blk] = k_tmp.data() + static_cast<std::size_t>(blk) * qkv_out_elems;
+        }
+        smelt_gemm_batch(
+            'N',
+            'N',
+            QKV_BLOCKSIZE,
+            N_t * H_t,
+            HS_t,
+            qkv_blocks,
+            a_ptrs.data(),
+            b_ptrs.data(),
+            c_ptrs.data());
+        for (int blk = 0; blk < qkv_blocks; ++blk) {
+          int j = blk * QKV_BLOCKSIZE;
+          k_trans_tpp(c_ptrs[blk], &k_a[i][j]); // [ 0*H_t*S_t + 0*S_t + j]
+        }
+      }
+    } else {
 #pragma omp parallel for collapse(2)
-    for (int i = 0; i < B_t; i++) {
-      for (int j = 0; j < S_t; j += QKV_BLOCKSIZE) {
-        T tmp[QKV_BLOCKSIZE * N_t * H_t];
-        qkv_brgemm_tpp(&m_data_a[i][j][0], &key_w_a[0][0][0], &tmp[0], 1);
-        k_trans_tpp(&tmp[0], &k_a[i][j]); // [ 0*H_t*S_t + 0*S_t + j]
+      for (int i = 0; i < B_t; i++) {
+        for (int j = 0; j < S_t; j += QKV_BLOCKSIZE) {
+          T tmp[QKV_BLOCKSIZE * N_t * H_t];
+          qkv_brgemm_tpp(&m_data_a[i][j][0], &key_w_a[0][0][0], &tmp[0], 1);
+          k_trans_tpp(&tmp[0], &k_a[i][j]); // [ 0*H_t*S_t + 0*S_t + j]
+        }
       }
     }
   }
@@ -142,11 +210,36 @@ float alpha = (1.0 / sqrt(key_dim));
   RECORD_SCOPE(alpha_v_gemm, {v, m_data, value_w});
   {
     RECORD_FUNCTION("parallel_for", std::vector<c10::IValue>());
+    if (brgemm_use_smelt_backend<T, T, T>(0.0f)) {
+      const int qkv_blocks = S_t / QKV_BLOCKSIZE;
+#pragma omp parallel for
+      for (int i = 0; i < B_t; i++) {
+        std::vector<const T*> a_ptrs(qkv_blocks);
+        std::vector<const T*> b_ptrs(qkv_blocks, &value_w_a[0][0][0]);
+        std::vector<T*> c_ptrs(qkv_blocks);
+        for (int blk = 0; blk < qkv_blocks; ++blk) {
+          int j = blk * QKV_BLOCKSIZE;
+          a_ptrs[blk] = &m_data_a[i][j][0];
+          c_ptrs[blk] = &v_a[i][j][0][0];
+        }
+        smelt_gemm_batch(
+            'N',
+            'N',
+            QKV_BLOCKSIZE,
+            N_t * H_t,
+            HS_t,
+            qkv_blocks,
+            a_ptrs.data(),
+            b_ptrs.data(),
+            c_ptrs.data());
+      }
+    } else {
 #pragma omp parallel for collapse(2)
-    for (int i = 0; i < B_t; i++) {
-      for (int j = 0; j < S_t; j += QKV_BLOCKSIZE) {
-        qkv_brgemm_tpp(
-            &m_data_a[i][j][0], &value_w_a[0][0][0], &v_a[i][j][0][0], 1);
+      for (int i = 0; i < B_t; i++) {
+        for (int j = 0; j < S_t; j += QKV_BLOCKSIZE) {
+          qkv_brgemm_tpp(
+              &m_data_a[i][j][0], &value_w_a[0][0][0], &v_a[i][j][0][0], 1);
+        }
       }
     }
   }
@@ -245,34 +338,56 @@ auto a_softmax_tpp =
           // csum[A_BLOCKSIZE];
 
           a_cpy_tpp(&q_a[i][j1][n][0], &tmp_qv[0]);
-          for (int j2 = 0; j2 < S_t; j2 += A_BLOCKSIZE) {
-            a_brgemm_tpp(
-                &tmp_qv[0], &k_a[i][n * H_t * S_t + j2], &tmp_logits[0][j2], 1);
+          if (brgemm_use_smelt_backend<T, T, T>(0.0f)) {
+            const int logits_blocks = S_t / A_BLOCKSIZE;
+            std::vector<const T*> a_ptrs(logits_blocks, &tmp_qv[0]);
+            std::vector<const T*> b_ptrs(logits_blocks);
+            std::vector<T*> c_ptrs(logits_blocks);
+            for (int blk = 0; blk < logits_blocks; ++blk) {
+              int j2 = blk * A_BLOCKSIZE;
+              b_ptrs[blk] = &k_a[i][n * H_t * S_t + j2];
+              c_ptrs[blk] = &tmp_logits[0][j2];
+            }
+            smelt_gemm_batch(
+                'N',
+                'N',
+                A_BLOCKSIZE,
+                A_BLOCKSIZE,
+                H_t,
+                logits_blocks,
+                a_ptrs.data(),
+                b_ptrs.data(),
+                c_ptrs.data());
+          } else {
+            for (int j2 = 0; j2 < S_t; j2 += A_BLOCKSIZE) {
+              a_brgemm_tpp(
+                  &tmp_qv[0], &k_a[i][n * H_t * S_t + j2], &tmp_logits[0][j2], 1);
 
-            //   a_addbias_tpp(&bias_a[i][j2], &tmp_logits[0][j2]);
-            //   if (flag)
-            //     a_add_nbbias_tpp(
-            //         &nonbatched_bias_a[0][n][j1][j2],
-            //         &tmp_logits[0][j2],
-            //         &tmp_logits[0][j2]);
+              //   a_addbias_tpp(&bias_a[i][j2], &tmp_logits[0][j2]);
+              //   if (flag)
+              //     a_add_nbbias_tpp(
+              //         &nonbatched_bias_a[0][n][j1][j2],
+              //         &tmp_logits[0][j2],
+              //         &tmp_logits[0][j2]);
 
-            //   a_cpy4_tpp(&tmp_logits[0][j2], tmp_S);
-            //   float *pmax, *psum;
-            //   if (j2 == 0) {
-            //     pmax = omax;
-            //     psum = osum;
-            //   } else {
-            //     pmax = cmax;
-            //     psum = csum;
-            //   }
+              //   a_cpy4_tpp(&tmp_logits[0][j2], tmp_S);
+              //   float *pmax, *psum;
+              //   if (j2 == 0) {
+              //     pmax = omax;
+              //     psum = osum;
+              //   } else {
+              //     pmax = cmax;
+              //     psum = csum;
+              //   }
 
-            //   a_softmax2_tpp(1, tmp_S, tmp_S, pmax, psum);   // calculate
-            //   local softmax a_brgemm2_tpp(tmp_S, &v_a[i][j2][n][0], tmp_o1,
-            //   1);      // O = P*V if (j2 == 0) {
-            //     a_cpy3_tpp(tmp_o1, tmp_o2);
-            //   } else {
-            //     a_softmax_fixup(tmp_o1, tmp_o2, cmax, csum, omax, osum);
-            //   }
+              //   a_softmax2_tpp(1, tmp_S, tmp_S, pmax, psum);   // calculate
+              //   local softmax a_brgemm2_tpp(tmp_S, &v_a[i][j2][n][0], tmp_o1,
+              //   1);      // O = P*V if (j2 == 0) {
+              //     a_cpy3_tpp(tmp_o1, tmp_o2);
+              //   } else {
+              //     a_softmax_fixup(tmp_o1, tmp_o2, cmax, csum, omax, osum);
+              //   }
+            }
           }
           a_addbias2_tpp(&bias_a[i][0], &tmp_logits[0][0]);
           if (flag)

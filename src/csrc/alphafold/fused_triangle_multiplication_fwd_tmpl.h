@@ -210,90 +210,232 @@ auto sigmoid_tpp = SCOPEIT(
         num_intermediate_channel),
     EW_SCL);
 
-{
-  RECORD_SCOPE(proj_gemm, {act, mask, left_projection_weight});
   {
-    weight_trans_tpp(
-        &left_projection_weight_a[0][0],
-        &left_trans_proj_weight_a[0][0]); // Transpose weights for the linear
-                                          // layers
-    weight_trans_tpp(
-        &left_gate_weight_a[0][0], &left_trans_gate_weight_a[0][0]);
+    RECORD_SCOPE(proj_gemm, {act, mask, left_projection_weight});
+    {
+      weight_trans_tpp(
+          &left_projection_weight_a[0][0],
+          &left_trans_proj_weight_a[0][0]); // Transpose weights for the linear
+                                            // layers
+      weight_trans_tpp(
+          &left_gate_weight_a[0][0], &left_trans_gate_weight_a[0][0]);
 
-    weight_trans_tpp(
-        &right_projection_weight_a[0][0], &right_trans_proj_weight_a[0][0]);
-    weight_trans_tpp(
-        &right_gate_weight_a[0][0], &right_trans_gate_weight_a[0][0]);
-    RECORD_FUNCTION("parallel_for", std::vector<c10::IValue>());
+      weight_trans_tpp(
+          &right_projection_weight_a[0][0], &right_trans_proj_weight_a[0][0]);
+      weight_trans_tpp(
+          &right_gate_weight_a[0][0], &right_trans_gate_weight_a[0][0]);
+      RECORD_FUNCTION("parallel_for", std::vector<c10::IValue>());
 // for (int i = 0; i < B_t; i++) {
+      if (brgemm_use_smelt_backend<T, T, T>(0.0f)) {
 #pragma omp parallel for collapse(2)
-    for (int i = 0; i < B_t; i += TRI_BLOCKSIZE) {
-      for (int j = 0; j < S_t; j += TRI_BLOCKSIZE) {
-        T tmp[TRI_BLOCKSIZE][num_intermediate_channel];
-        T tmp_gate_values[TRI_BLOCKSIZE][num_intermediate_channel];
-        T tmp_proj[TRI_BLOCKSIZE][num_intermediate_channel];
+      for (int i = 0; i < B_t; i += TRI_BLOCKSIZE) {
+        for (int j = 0; j < S_t; j += TRI_BLOCKSIZE) {
+          T left_proj_gemm[TRI_BLOCKSIZE][num_intermediate_channel];
+          T left_proj_out[TRI_BLOCKSIZE][num_intermediate_channel];
+          T left_gate_gemm[TRI_BLOCKSIZE][num_intermediate_channel];
+          T left_gate_out[TRI_BLOCKSIZE][num_intermediate_channel];
+          T right_proj_gemm[TRI_BLOCKSIZE][num_intermediate_channel];
+          T right_proj_out[TRI_BLOCKSIZE][num_intermediate_channel];
+          T right_gate_gemm[TRI_BLOCKSIZE][num_intermediate_channel];
+          T right_gate_out[TRI_BLOCKSIZE][num_intermediate_channel];
+          std::array<const T*, TRI_BLOCKSIZE> a_ptrs{};
+          std::array<const T*, TRI_BLOCKSIZE> b_ptrs{};
+          std::array<T*, TRI_BLOCKSIZE> c_ptrs{};
 
-        for (int ib = 0; ib < TRI_BLOCKSIZE; ib++) {
-          proj_brgemm_tpp(
-              &act_a[i + ib][j][0],
-              &left_trans_proj_weight_a[0][0],
-              &tmp[0][0],
-              1);
-          add_bias_tpp(&left_projection_bias_a[0][0], &tmp[0][0]);
-          mul_broad_tpp(&mask_a[i + ib][j][0], &tmp[0][0], &tmp_proj[0][0]);
+          for (int ib = 0; ib < TRI_BLOCKSIZE; ++ib) {
+            a_ptrs[ib] = &act_a[i + ib][j][0];
+            b_ptrs[ib] = &left_trans_proj_weight_a[0][0];
+            c_ptrs[ib] = &left_proj_gemm[ib][0];
+          }
+          smelt_gemm_batch(
+              'N',
+              'N',
+              TRI_BLOCKSIZE,
+              num_intermediate_channel,
+              act_dim,
+              TRI_BLOCKSIZE,
+              a_ptrs.data(),
+              b_ptrs.data(),
+              c_ptrs.data());
+          for (int ib = 0; ib < TRI_BLOCKSIZE; ++ib) {
+            add_bias_tpp(&left_projection_bias_a[0][0], &left_proj_gemm[ib][0]);
+            mul_broad_tpp(
+                &mask_a[i + ib][j][0],
+                &left_proj_gemm[ib][0],
+                &left_proj_out[ib][0]);
+          }
 
-          proj_brgemm_tpp(
-              &act_a[i + ib][j][0],
-              &left_trans_gate_weight_a[0][0],
-              &tmp[0][0],
-              1);
-          add_bias_tpp(&left_gate_bias_a[0][0], &tmp[0][0]);
-          sigmoid_tpp(&tmp[0][0], &tmp[0][0], &tmp_gate_values[0][0]);
-          mul_tpp(&tmp_proj[0][0], &tmp_gate_values[0][0], &tmp_proj[0][0]);
+          for (int ib = 0; ib < TRI_BLOCKSIZE; ++ib) {
+            a_ptrs[ib] = &act_a[i + ib][j][0];
+            b_ptrs[ib] = &left_trans_gate_weight_a[0][0];
+            c_ptrs[ib] = &left_gate_gemm[ib][0];
+          }
+          smelt_gemm_batch(
+              'N',
+              'N',
+              TRI_BLOCKSIZE,
+              num_intermediate_channel,
+              act_dim,
+              TRI_BLOCKSIZE,
+              a_ptrs.data(),
+              b_ptrs.data(),
+              c_ptrs.data());
+          for (int ib = 0; ib < TRI_BLOCKSIZE; ++ib) {
+            add_bias_tpp(&left_gate_bias_a[0][0], &left_gate_gemm[ib][0]);
+            sigmoid_tpp(
+                &left_gate_gemm[ib][0],
+                &left_gate_gemm[ib][0],
+                &left_gate_out[ib][0]);
+            mul_tpp(
+                &left_proj_out[ib][0],
+                &left_gate_out[ib][0],
+                &left_proj_out[ib][0]);
 
-          if (equation_flag == 0)
-            proj_trans_tpp(
-                &tmp_proj[0][0],
-                &left_proj_act_a[0][i / TRI_BLOCKSIZE][j / TRI_BLOCKSIZE][ib]
-                                [0]);
-          else
-            proj_trans_tpp(
-                &tmp_proj[0][0],
-                &left_proj_act_a[0][j / TRI_BLOCKSIZE][i / TRI_BLOCKSIZE][ib]
-                                [0]);
+            if (equation_flag == 0)
+              proj_trans_tpp(
+                  &left_proj_out[ib][0],
+                  &left_proj_act_a[0][i / TRI_BLOCKSIZE][j / TRI_BLOCKSIZE][ib]
+                                  [0]);
+            else
+              proj_trans_tpp(
+                  &left_proj_out[ib][0],
+                  &left_proj_act_a[0][j / TRI_BLOCKSIZE][i / TRI_BLOCKSIZE][ib]
+                                  [0]);
+          }
 
-          proj_brgemm_tpp(
-              &act_a[i + ib][j][0],
-              &right_trans_proj_weight_a[0][0],
-              &tmp[0][0],
-              1);
-          add_bias_tpp(&right_projection_bias_a[0][0], &tmp[0][0]);
-          mul_broad_tpp(&mask_a[i + ib][j][0], &tmp[0][0], &tmp_proj[0][0]);
+          for (int ib = 0; ib < TRI_BLOCKSIZE; ++ib) {
+            a_ptrs[ib] = &act_a[i + ib][j][0];
+            b_ptrs[ib] = &right_trans_proj_weight_a[0][0];
+            c_ptrs[ib] = &right_proj_gemm[ib][0];
+          }
+          smelt_gemm_batch(
+              'N',
+              'N',
+              TRI_BLOCKSIZE,
+              num_intermediate_channel,
+              act_dim,
+              TRI_BLOCKSIZE,
+              a_ptrs.data(),
+              b_ptrs.data(),
+              c_ptrs.data());
+          for (int ib = 0; ib < TRI_BLOCKSIZE; ++ib) {
+            add_bias_tpp(
+                &right_projection_bias_a[0][0], &right_proj_gemm[ib][0]);
+            mul_broad_tpp(
+                &mask_a[i + ib][j][0],
+                &right_proj_gemm[ib][0],
+                &right_proj_out[ib][0]);
+          }
 
-          proj_brgemm_tpp(
-              &act_a[i + ib][j][0],
-              &right_trans_gate_weight_a[0][0],
-              &tmp[0][0],
-              1);
-          add_bias_tpp(&right_gate_bias_a[0][0], &tmp[0][0]);
-          sigmoid_tpp(&tmp[0][0], &tmp[0][0], &tmp_gate_values[0][0]);
-          mul_tpp(&tmp_proj[0][0], &tmp_gate_values[0][0], &tmp_proj[0][0]);
+          for (int ib = 0; ib < TRI_BLOCKSIZE; ++ib) {
+            a_ptrs[ib] = &act_a[i + ib][j][0];
+            b_ptrs[ib] = &right_trans_gate_weight_a[0][0];
+            c_ptrs[ib] = &right_gate_gemm[ib][0];
+          }
+          smelt_gemm_batch(
+              'N',
+              'N',
+              TRI_BLOCKSIZE,
+              num_intermediate_channel,
+              act_dim,
+              TRI_BLOCKSIZE,
+              a_ptrs.data(),
+              b_ptrs.data(),
+              c_ptrs.data());
+          for (int ib = 0; ib < TRI_BLOCKSIZE; ++ib) {
+            add_bias_tpp(&right_gate_bias_a[0][0], &right_gate_gemm[ib][0]);
+            sigmoid_tpp(
+                &right_gate_gemm[ib][0],
+                &right_gate_gemm[ib][0],
+                &right_gate_out[ib][0]);
+            mul_tpp(
+                &right_proj_out[ib][0],
+                &right_gate_out[ib][0],
+                &right_proj_out[ib][0]);
 
-          if (equation_flag == 0)
-            proj_trans_tpp(
-                &tmp_proj[0][0],
-                &right_proj_act_a[0][i / TRI_BLOCKSIZE][j / TRI_BLOCKSIZE][ib]
-                                 [0]);
-          else
-            proj_trans_tpp(
-                &tmp_proj[0][0],
-                &right_proj_act_a[0][j / TRI_BLOCKSIZE][i / TRI_BLOCKSIZE][ib]
-                                 [0]);
+            if (equation_flag == 0)
+              proj_trans_tpp(
+                  &right_proj_out[ib][0],
+                  &right_proj_act_a[0][i / TRI_BLOCKSIZE][j / TRI_BLOCKSIZE][ib]
+                                   [0]);
+            else
+              proj_trans_tpp(
+                  &right_proj_out[ib][0],
+                  &right_proj_act_a[0][j / TRI_BLOCKSIZE][i / TRI_BLOCKSIZE][ib]
+                                   [0]);
+          }
         }
+      }
+      } else {
+#pragma omp parallel for collapse(2)
+      for (int i = 0; i < B_t; i += TRI_BLOCKSIZE) {
+        for (int j = 0; j < S_t; j += TRI_BLOCKSIZE) {
+          T tmp[TRI_BLOCKSIZE][num_intermediate_channel];
+          T tmp_gate_values[TRI_BLOCKSIZE][num_intermediate_channel];
+          T tmp_proj[TRI_BLOCKSIZE][num_intermediate_channel];
+
+          for (int ib = 0; ib < TRI_BLOCKSIZE; ib++) {
+            proj_brgemm_tpp(
+                &act_a[i + ib][j][0],
+                &left_trans_proj_weight_a[0][0],
+                &tmp[0][0],
+                1);
+            add_bias_tpp(&left_projection_bias_a[0][0], &tmp[0][0]);
+            mul_broad_tpp(&mask_a[i + ib][j][0], &tmp[0][0], &tmp_proj[0][0]);
+
+            proj_brgemm_tpp(
+                &act_a[i + ib][j][0],
+                &left_trans_gate_weight_a[0][0],
+                &tmp[0][0],
+                1);
+            add_bias_tpp(&left_gate_bias_a[0][0], &tmp[0][0]);
+            sigmoid_tpp(&tmp[0][0], &tmp[0][0], &tmp_gate_values[0][0]);
+            mul_tpp(&tmp_proj[0][0], &tmp_gate_values[0][0], &tmp_proj[0][0]);
+
+            if (equation_flag == 0)
+              proj_trans_tpp(
+                  &tmp_proj[0][0],
+                  &left_proj_act_a[0][i / TRI_BLOCKSIZE][j / TRI_BLOCKSIZE][ib]
+                                  [0]);
+            else
+              proj_trans_tpp(
+                  &tmp_proj[0][0],
+                  &left_proj_act_a[0][j / TRI_BLOCKSIZE][i / TRI_BLOCKSIZE][ib]
+                                  [0]);
+
+            proj_brgemm_tpp(
+                &act_a[i + ib][j][0],
+                &right_trans_proj_weight_a[0][0],
+                &tmp[0][0],
+                1);
+            add_bias_tpp(&right_projection_bias_a[0][0], &tmp[0][0]);
+            mul_broad_tpp(&mask_a[i + ib][j][0], &tmp[0][0], &tmp_proj[0][0]);
+
+            proj_brgemm_tpp(
+                &act_a[i + ib][j][0],
+                &right_trans_gate_weight_a[0][0],
+                &tmp[0][0],
+                1);
+            add_bias_tpp(&right_gate_bias_a[0][0], &tmp[0][0]);
+            sigmoid_tpp(&tmp[0][0], &tmp[0][0], &tmp_gate_values[0][0]);
+            mul_tpp(&tmp_proj[0][0], &tmp_gate_values[0][0], &tmp_proj[0][0]);
+
+            if (equation_flag == 0)
+              proj_trans_tpp(
+                  &tmp_proj[0][0],
+                  &right_proj_act_a[0][i / TRI_BLOCKSIZE][j / TRI_BLOCKSIZE][ib]
+                                   [0]);
+            else
+              proj_trans_tpp(
+                  &tmp_proj[0][0],
+                  &right_proj_act_a[0][j / TRI_BLOCKSIZE][i / TRI_BLOCKSIZE][ib]
+                                   [0]);
+          }
+        }
+      }
       }
     }
   }
-}
 
 if (equation_flag == 0) { // "Outgoing" edges equation = 'ikc,jkc->ijc'
   // act = at::einsum("ikc,jkc->ijc", {left_proj_act, right_proj_act}); // [764,
@@ -481,6 +623,52 @@ act_a = GetVLAPtr<T>(act, {S_t, act_dim});
         &output_projection_weight_a[0][0], &output_trans_proj_weight_a[0][0]);
 
     RECORD_FUNCTION("parallel_for", std::vector<c10::IValue>());
+    if (brgemm_use_smelt_backend<T, T, T>(0.0f)) {
+#pragma omp parallel for
+      for (int i = 0; i < B_t; i++) {
+        const int num_j_blocks = S_t / TRI_BLOCKSIZE;
+        std::vector<const T*> a_ptrs(num_j_blocks);
+        std::vector<const T*> b_ptrs(num_j_blocks);
+        std::vector<T*> c_ptrs(num_j_blocks);
+        std::vector<T> tmp_blocks(
+            static_cast<std::size_t>(num_j_blocks) * TRI_BLOCKSIZE * act_dim);
+        std::vector<T> tmp_mean(act_dim);
+        std::vector<T> tmp_var(act_dim);
+
+        for (int j = 0; j < S_t; j += TRI_BLOCKSIZE) {
+          layernorm(
+              &act_a[i][j][0],
+              &center_gamma_a[0][0],
+              &center_beta_a[0][0],
+              tmp_mean.data(),
+              tmp_var.data(),
+              &act_a[i][j][0]);
+          const int jb = j / TRI_BLOCKSIZE;
+          a_ptrs[jb] = &act_a[i][j][0];
+          b_ptrs[jb] = &output_trans_proj_weight_a[0][0];
+          c_ptrs[jb] = tmp_blocks.data() +
+              static_cast<std::size_t>(jb) * TRI_BLOCKSIZE * act_dim;
+        }
+
+        smelt_gemm_batch(
+            'N',
+            'N',
+            TRI_BLOCKSIZE,
+            act_dim,
+            act_dim,
+            num_j_blocks,
+            a_ptrs.data(),
+            b_ptrs.data(),
+            c_ptrs.data());
+
+        for (int j = 0; j < S_t; j += TRI_BLOCKSIZE) {
+          const int jb = j / TRI_BLOCKSIZE;
+          T* tmp_ptr = c_ptrs[jb];
+          outgate_add_bias_tpp(&output_projection_bias_a[0][0], tmp_ptr);
+          outgate_copy_tpp(tmp_ptr, &act_a[i][j][0]);
+        }
+      }
+    } else {
 #pragma omp parallel for collapse(2)
     for (int i = 0; i < B_t; i++) {
       for (int j = 0; j < S_t; j += TRI_BLOCKSIZE) {
@@ -502,6 +690,7 @@ act_a = GetVLAPtr<T>(act, {S_t, act_dim});
         outgate_copy_tpp(&tmp[0][0], &act_a[i][j][0]);
       }
     }
+    }
   }
 }
 
@@ -513,6 +702,48 @@ act_a = GetVLAPtr<T>(act, {S_t, act_dim});
         &gating_linear_weight_a[0][0], &gating_linear_trans_weight_a[0][0]);
 
     RECORD_FUNCTION("parallel_for", std::vector<c10::IValue>());
+    if (brgemm_use_smelt_backend<T, T, T>(0.0f)) {
+#pragma omp parallel for
+      for (int i = 0; i < B_t; i++) {
+        const int num_j_blocks = S_t / TRI_BLOCKSIZE;
+        std::vector<const T*> a_ptrs(num_j_blocks);
+        std::vector<const T*> b_ptrs(num_j_blocks);
+        std::vector<T*> c_ptrs(num_j_blocks);
+        std::vector<T> tmp_blocks(
+            static_cast<std::size_t>(num_j_blocks) * TRI_BLOCKSIZE * act_dim);
+        std::vector<T> tmp_gate_blocks(
+            static_cast<std::size_t>(num_j_blocks) * TRI_BLOCKSIZE * act_dim);
+
+        for (int j = 0; j < S_t; j += TRI_BLOCKSIZE) {
+          const int jb = j / TRI_BLOCKSIZE;
+          a_ptrs[jb] = &input_act_a[i][j][0];
+          b_ptrs[jb] = &gating_linear_trans_weight_a[0][0];
+          c_ptrs[jb] = tmp_blocks.data() +
+              static_cast<std::size_t>(jb) * TRI_BLOCKSIZE * act_dim;
+        }
+
+        smelt_gemm_batch(
+            'N',
+            'N',
+            TRI_BLOCKSIZE,
+            act_dim,
+            act_dim,
+            num_j_blocks,
+            a_ptrs.data(),
+            b_ptrs.data(),
+            c_ptrs.data());
+
+        for (int j = 0; j < S_t; j += TRI_BLOCKSIZE) {
+          const int jb = j / TRI_BLOCKSIZE;
+          T* tmp_ptr = c_ptrs[jb];
+          outgate_add_bias_tpp(&gating_linear_bias_a[0][0], tmp_ptr);
+          T* gate_ptr = tmp_gate_blocks.data() +
+              static_cast<std::size_t>(jb) * TRI_BLOCKSIZE * act_dim;
+          outgate_sigmoid_tpp(tmp_ptr, tmp_ptr, gate_ptr);
+          outgate_mul_tpp(&act_a[i][j][0], gate_ptr, &act_a[i][j][0]);
+        }
+      }
+    } else {
 #pragma omp parallel for collapse(2)
     for (int i = 0; i < B_t; i++) {
       for (int j = 0; j < S_t; j += TRI_BLOCKSIZE) {
@@ -529,6 +760,7 @@ act_a = GetVLAPtr<T>(act, {S_t, act_dim});
         outgate_mul_tpp(
             &act_a[i][j][0], &tmp_gate_values[0][0], &act_a[i][j][0]);
       }
+    }
     }
   }
 }

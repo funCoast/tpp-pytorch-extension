@@ -28,6 +28,7 @@
 #endif
 #include <float8.h>
 #include <string>
+#include <stdexcept>
 #include <type_traits>
 #include <unordered_map>
 #include <vector>
@@ -360,6 +361,45 @@ inline bool brgemm_use_smelt_backend(float beta = 0.0f) {
 #else
   (void)beta;
   return false;
+#endif
+}
+
+template <typename T>
+inline void smelt_gemm_batch(
+    char transa,
+    char transb,
+    int m,
+    int n,
+    int k,
+    std::int64_t batch,
+    const T* const* a_array,
+    const T* const* b_array,
+    T* const* c_array) {
+#ifdef TPP_WITH_SMELT
+  if (batch <= 0) {
+    throw std::invalid_argument("batch must be positive");
+  }
+  if (a_array == nullptr || b_array == nullptr || c_array == nullptr) {
+    throw std::invalid_argument("batch pointer arrays must be non-null");
+  }
+  if constexpr (std::is_same<T, double>::value) {
+    SMELT::dgemm_batch(transa, transb, m, n, k, batch, a_array, b_array, c_array);
+  } else if constexpr (std::is_same<T, float>::value) {
+    SMELT::sgemm_batch(transa, transb, m, n, k, batch, a_array, b_array, c_array);
+  } else {
+    throw std::invalid_argument("SMELT batch helper only supports float/double");
+  }
+#else
+  (void)transa;
+  (void)transb;
+  (void)m;
+  (void)n;
+  (void)k;
+  (void)batch;
+  (void)a_array;
+  (void)b_array;
+  (void)c_array;
+  throw std::runtime_error("SMELT batch helper requires TPP_WITH_SMELT");
 #endif
 }
 
@@ -2447,10 +2487,20 @@ class BrgemmTPP {
     const int a_cols = (transa == 'N') ? static_cast<int>(K) : static_cast<int>(M);
     const int b_rows = static_cast<int>(K);
     const int b_cols = static_cast<int>(N);
-    std::vector<SmeltT> a_compact(static_cast<std::size_t>(a_rows) * a_cols);
-    std::vector<SmeltT> b_compact(static_cast<std::size_t>(b_rows) * b_cols);
-    std::vector<SmeltT> c_block(static_cast<std::size_t>(M) * N);
-    std::vector<SmeltT> c_accum(static_cast<std::size_t>(M) * N);
+    const std::size_t a_block_elems =
+        static_cast<std::size_t>(a_rows) * static_cast<std::size_t>(a_cols);
+    const std::size_t b_block_elems =
+        static_cast<std::size_t>(b_rows) * static_cast<std::size_t>(b_cols);
+    const std::size_t c_block_elems =
+        static_cast<std::size_t>(M) * static_cast<std::size_t>(N);
+
+    std::vector<SmeltT> a_compact(static_cast<std::size_t>(count) * a_block_elems);
+    std::vector<SmeltT> b_compact(static_cast<std::size_t>(count) * b_block_elems);
+    std::vector<SmeltT> c_blocks(static_cast<std::size_t>(count) * c_block_elems);
+    std::vector<SmeltT> c_accum(c_block_elems);
+    std::vector<const SmeltT*> a_ptrs(static_cast<std::size_t>(count));
+    std::vector<const SmeltT*> b_ptrs(static_cast<std::size_t>(count));
+    std::vector<SmeltT*> c_ptrs(static_cast<std::size_t>(count));
 
     if (beta != 0.0f) {
       for (int i = 0; i < M; ++i) {
@@ -2466,41 +2516,49 @@ class BrgemmTPP {
       const SmeltT* A_ = reinterpret_cast<const SmeltT*>(&A[c * str_a]);
       const SmeltT* B_ = reinterpret_cast<const SmeltT*>(&B[c * str_b]);
 
-      copy_strided_rows(A_, a_compact.data(), a_rows, a_cols, lda);
-      copy_strided_rows(B_, b_compact.data(), b_rows, b_cols, ldb);
-      std::fill(c_block.begin(), c_block.end(), SmeltT{0});
+      SmeltT* a_dst = a_compact.data() + c * a_block_elems;
+      SmeltT* b_dst = b_compact.data() + c * b_block_elems;
+      SmeltT* c_dst = c_blocks.data() + c * c_block_elems;
 
-      if constexpr (std::is_same<SmeltT, double>::value) {
-        const double* const a_ptr[1] = {a_compact.data()};
-        const double* const b_ptr[1] = {b_compact.data()};
-        double* const c_ptr[1] = {c_block.data()};
-        SMELT::dgemm_batch(
-            transa,
-            transb,
-            static_cast<int>(M),
-            static_cast<int>(N),
-            static_cast<int>(K),
-            1,
-            a_ptr,
-            b_ptr,
-            c_ptr);
-      } else {
-        const float* const a_ptr[1] = {a_compact.data()};
-        const float* const b_ptr[1] = {b_compact.data()};
-        float* const c_ptr[1] = {c_block.data()};
-        SMELT::sgemm_batch(
-            transa,
-            transb,
-            static_cast<int>(M),
-            static_cast<int>(N),
-            static_cast<int>(K),
-            1,
-            a_ptr,
-            b_ptr,
-            c_ptr);
-      }
+      copy_strided_rows(A_, a_dst, a_rows, a_cols, lda);
+      copy_strided_rows(B_, b_dst, b_rows, b_cols, ldb);
+      std::fill(c_dst, c_dst + c_block_elems, SmeltT{0});
 
-      add_compact_block(c_accum.data(), c_block.data(), static_cast<int>(M), static_cast<int>(N));
+      a_ptrs[c] = a_dst;
+      b_ptrs[c] = b_dst;
+      c_ptrs[c] = c_dst;
+    }
+
+    if constexpr (std::is_same<SmeltT, double>::value) {
+      SMELT::dgemm_batch(
+          transa,
+          transb,
+          static_cast<int>(M),
+          static_cast<int>(N),
+          static_cast<int>(K),
+          static_cast<std::int64_t>(count),
+          a_ptrs.data(),
+          b_ptrs.data(),
+          c_ptrs.data());
+    } else {
+      SMELT::sgemm_batch(
+          transa,
+          transb,
+          static_cast<int>(M),
+          static_cast<int>(N),
+          static_cast<int>(K),
+          static_cast<std::int64_t>(count),
+          a_ptrs.data(),
+          b_ptrs.data(),
+          c_ptrs.data());
+    }
+
+    for (unsigned long long c = 0; c < count; ++c) {
+      add_compact_block(
+          c_accum.data(),
+          c_blocks.data() + c * c_block_elems,
+          static_cast<int>(M),
+          static_cast<int>(N));
     }
 
     scatter_compact_rows(
