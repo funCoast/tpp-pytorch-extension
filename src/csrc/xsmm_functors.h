@@ -381,6 +381,25 @@ inline bool brgemm_debug_enabled() {
 #endif
 }
 
+inline bool brgemm_trace_enabled() {
+#ifdef TPP_WITH_SMELT
+  static const bool enabled =
+      env_flag_enabled("TPP_BRGEMM_TRACE") || env_flag_enabled("TPP_BRGEMM_DEBUG");
+  return enabled;
+#else
+  return false;
+#endif
+}
+
+inline bool brgemm_force_scalar_enabled() {
+#ifdef TPP_WITH_SMELT
+  static const bool enabled = env_flag_enabled("TPP_BRGEMM_FORCE_SCALAR");
+  return enabled;
+#else
+  return false;
+#endif
+}
+
 template <typename Tin, typename Tw, typename Tout>
 constexpr bool brgemm_smelt_supported() {
 #ifdef TPP_WITH_SMELT
@@ -480,18 +499,35 @@ inline void smelt_gemm_batch(
   if (a_array == nullptr || b_array == nullptr || c_array == nullptr) {
     throw std::invalid_argument("batch pointer arrays must be non-null");
   }
-  if (brgemm_debug_enabled()) {
+  constexpr std::int64_t kSmeltBatchChunk = 8;
+  const bool chunk_batch = batch > kSmeltBatchChunk;
+  if (brgemm_trace_enabled()) {
     const char* label = (tag == nullptr || *tag == '\0') ? "smelt_gemm_batch" : tag;
+#ifdef _OPENMP
+    const int thread_id = omp_get_thread_num();
+#else
+    const int thread_id = 0;
+#endif
+    static std::atomic<long long> smelt_batch_seq{0};
+    const long long seq = smelt_batch_seq.fetch_add(1, std::memory_order_relaxed);
     std::fprintf(
         stderr,
-        "[SME-GEMM-dev DEBUG][%s] batch=%lld M=%d N=%d K=%d transa=%c transb=%c\n",
+        "[SME-GEMM-dev DEBUG][%s] seq=%lld thread=%d batch=%lld M=%d N=%d K=%d transa=%c transb=%c enter\n",
         label,
+        seq,
+        thread_id,
         static_cast<long long>(batch),
         m,
         n,
         k,
         transa,
         transb);
+    if (chunk_batch) {
+      std::fprintf(
+          stderr,
+          "  chunking batch into <= %lld-item micro-batches\n",
+          static_cast<long long>(kSmeltBatchChunk));
+    }
     std::fprintf(
         stderr,
         "  A[0]=%p B[0]=%p C[0]=%p\n",
@@ -510,12 +546,55 @@ inline void smelt_gemm_batch(
   }
   static std::mutex smelt_batch_mutex;
   std::lock_guard<std::mutex> lock(smelt_batch_mutex);
-  if constexpr (std::is_same<T, double>::value) {
-    SMELT::dgemm_batch(transa, transb, m, n, k, batch, a_array, b_array, c_array);
-  } else if constexpr (std::is_same<T, float>::value) {
-    SMELT::sgemm_batch(transa, transb, m, n, k, batch, a_array, b_array, c_array);
+  auto run_smelt_batch = [&](std::int64_t cur_batch,
+                             const T* const* cur_a_array,
+                             const T* const* cur_b_array,
+                             T* const* cur_c_array) {
+    if constexpr (std::is_same<T, double>::value) {
+      SMELT::dgemm_batch(transa, transb, m, n, k, cur_batch, cur_a_array, cur_b_array, cur_c_array);
+    } else if constexpr (std::is_same<T, float>::value) {
+      SMELT::sgemm_batch(transa, transb, m, n, k, cur_batch, cur_a_array, cur_b_array, cur_c_array);
+    } else {
+      throw std::invalid_argument("SMELT batch helper only supports float/double");
+    }
+  };
+  if (chunk_batch) {
+    for (std::int64_t offset = 0; offset < batch; offset += kSmeltBatchChunk) {
+      const std::int64_t cur_batch = (batch - offset < kSmeltBatchChunk) ? (batch - offset) : kSmeltBatchChunk;
+      if (brgemm_trace_enabled()) {
+        const char* label = (tag == nullptr || *tag == '\0') ? "smelt_gemm_batch" : tag;
+#ifdef _OPENMP
+        const int thread_id = omp_get_thread_num();
+#else
+        const int thread_id = 0;
+#endif
+        std::fprintf(
+            stderr,
+            "[SME-GEMM-dev DEBUG][%s] thread=%d chunk_offset=%lld chunk_batch=%lld\n",
+            label,
+            thread_id,
+            static_cast<long long>(offset),
+            static_cast<long long>(cur_batch));
+        std::fflush(stderr);
+      }
+      run_smelt_batch(cur_batch, a_array + offset, b_array + offset, c_array + offset);
+    }
   } else {
-    throw std::invalid_argument("SMELT batch helper only supports float/double");
+    run_smelt_batch(batch, a_array, b_array, c_array);
+  }
+  if (brgemm_trace_enabled()) {
+#ifdef _OPENMP
+    const int thread_id = omp_get_thread_num();
+#else
+    const int thread_id = 0;
+#endif
+    const char* label = (tag == nullptr || *tag == '\0') ? "smelt_gemm_batch" : tag;
+    std::fprintf(
+        stderr,
+        "[SME-GEMM-dev DEBUG][%s] thread=%d exit\n",
+        label,
+        thread_id);
+    std::fflush(stderr);
   }
 #else
   (void)tag;
@@ -2710,6 +2789,7 @@ class BrgemmTPP {
     (void)C;
     (void)count;
 #endif
+  }
  public:
   long flops() {
     return 2L * M * N * K;

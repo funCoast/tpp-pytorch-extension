@@ -205,7 +205,7 @@ auto sigmoid_tpp = SCOPEIT(
 
     RECORD_FUNCTION("parallel_for", std::vector<c10::IValue>());
 // for (int i = 0; i < B_t; i++) {
-      if (brgemm_use_smelt_backend<T, T, T>(0.0f) && !brgemm_debug_enabled()) {
+      if (brgemm_use_smelt_backend<T, T, T>(0.0f) && !brgemm_force_scalar_enabled()) {
 #pragma omp parallel for collapse(2)
       for (int i = 0; i < B_t; i += TRI_BLOCKSIZE) {
         for (int j = 0; j < S_t; j += TRI_BLOCKSIZE) {
@@ -565,7 +565,7 @@ act_a = GetVLAPtr<T>(act, {S_t, act_dim});
         &output_projection_weight_a[0][0], &output_trans_proj_weight_a[0][0]);
 
     RECORD_FUNCTION("parallel_for", std::vector<c10::IValue>());
-    if (brgemm_use_smelt_backend<T, T, T>(0.0f) && !brgemm_debug_enabled()) {
+    if (brgemm_use_smelt_backend<T, T, T>(0.0f) && !brgemm_force_scalar_enabled()) {
 #pragma omp parallel for
       for (int i = 0; i < B_t; i++) {
         const int num_j_blocks = S_t / TRI_BLOCKSIZE;
@@ -645,7 +645,7 @@ act_a = GetVLAPtr<T>(act, {S_t, act_dim});
         &gating_linear_weight_a[0][0], &gating_linear_trans_weight_a[0][0]);
 
     RECORD_FUNCTION("parallel_for", std::vector<c10::IValue>());
-    if (brgemm_use_smelt_backend<T, T, T>(0.0f) && !brgemm_debug_enabled()) {
+    if (brgemm_use_smelt_backend<T, T, T>(0.0f) && !brgemm_force_scalar_enabled()) {
 #pragma omp parallel for
       for (int i = 0; i < B_t; i++) {
         const int num_j_blocks = S_t / TRI_BLOCKSIZE;

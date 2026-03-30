@@ -176,6 +176,13 @@ def TriangleMultiplicationOpti_forward(self, act, mask, backend=None):
     effective_backend = get_brgemm_backend() if backend is None else backend
     compare_active = should_compare_brgemm() and is_smelt_backend(effective_backend)
     debug_active = should_debug_brgemm()
+    act_dim = int(self.left_projection.in_features)
+    num_intermediate_channel = int(self.left_projection.out_features)
+    tri_blocksize = 32
+    b = int(act.shape[0])
+    s = int(act.shape[1])
+    b_pad = ((b + tri_blocksize - 1) // tri_blocksize) * tri_blocksize
+    s_pad = ((s + tri_blocksize - 1) // tri_blocksize) * tri_blocksize
     if debug_active:
         backend_name = (
             effective_backend.name
@@ -213,13 +220,6 @@ def TriangleMultiplicationOpti_forward(self, act, mask, backend=None):
             "[SME-GEMM-dev DEBUG]:TriangleMultiplication debug mode keeps the "
             "SMELT batch path enabled for supported kernels"
         )
-        act_dim = int(self.left_projection.in_features)
-        num_intermediate_channel = int(self.left_projection.out_features)
-        tri_blocksize = 32
-        b = int(act.shape[0])
-        s = int(act.shape[1])
-        b_pad = ((b + tri_blocksize - 1) // tri_blocksize) * tri_blocksize
-        s_pad = ((s + tri_blocksize - 1) // tri_blocksize) * tri_blocksize
         print(
             "[SME-GEMM-dev DEBUG]:TriangleMultiplication batch layout: "
             f"B={b}, S={s}, B_pad={b_pad}, S_pad={s_pad}, act_dim={act_dim}, "

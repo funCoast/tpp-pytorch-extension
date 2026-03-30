@@ -173,6 +173,17 @@ def GatingAttentionOpti_forward(
 
     compare_active = should_compare_brgemm() and is_smelt_backend(effective_backend)
     debug_active = should_debug_brgemm()
+    batch = int(q_data.shape[0])
+    seq = int(q_data.shape[1])
+    qkv_hidden = int(q_data.shape[2])
+    num_head = int(self.num_head)
+    head_dim = int(self.key_dim)
+    value_dim = int(self.value_dim)
+    qkv_blocksize = 64
+    a_blocksize = 64
+    c_blocksize = 64
+    seq_pad = ((seq + qkv_blocksize - 1) // qkv_blocksize) * qkv_blocksize
+    head_prod = num_head * head_dim
     if debug_active:
         backend_name = (
             effective_backend.name
@@ -203,17 +214,6 @@ def GatingAttentionOpti_forward(
             "[SME-GEMM-dev DEBUG]:AlphaAttention debug mode keeps the SMELT "
             "batch path enabled for supported kernels"
         )
-        batch = int(q_data.shape[0])
-        seq = int(q_data.shape[1])
-        qkv_hidden = int(q_data.shape[2])
-        num_head = int(self.num_head)
-        head_dim = int(self.key_dim)
-        value_dim = int(self.value_dim)
-        qkv_blocksize = 64
-        a_blocksize = 64
-        c_blocksize = 64
-        seq_pad = ((seq + qkv_blocksize - 1) // qkv_blocksize) * qkv_blocksize
-        head_prod = num_head * head_dim
         print(
             "[SME-GEMM-dev DEBUG]:AlphaAttention batch layout: "
             f"B={batch}, S={seq}, S_pad={seq_pad}, HS={qkv_hidden}, "
